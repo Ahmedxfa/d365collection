@@ -1099,10 +1099,60 @@ thead {
 }
 
 th {
+	position: relative;
 	padding: 11px 12px;
 	color: #77857f;
 	font-size: 9px;
 	font-weight: 650;
+}
+
+.sort-button {
+	padding: 0;
+	border: 0;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	text-align: right;
+	cursor: pointer;
+}
+
+.sort-button:hover,
+.sort-button:focus-visible {
+	color: #176f5e;
+}
+
+.column-resizer {
+	position: absolute;
+	z-index: 1;
+	top: 4px;
+	bottom: 4px;
+	left: 0;
+	width: 9px;
+	padding: 0;
+	border: 0;
+	background: transparent;
+	cursor: col-resize;
+	touch-action: none;
+}
+
+.column-resizer::after {
+	position: absolute;
+	top: 2px;
+	bottom: 2px;
+	left: 4px;
+	width: 1px;
+	background: #dce4dd;
+	content: "";
+}
+
+.column-resizer:hover::after,
+.column-resizer:focus-visible::after {
+	width: 2px;
+	background: #4c9574;
+}
+
+.column-resizer:focus-visible {
+	outline: 0;
 }
 
 td {
@@ -1171,8 +1221,9 @@ td:first-child {
 	font-weight: 750;
 }
 
-.accounts-panel table {
-	min-width: 1450px;
+.accounts-panel .accounts-table {
+	min-width: 0;
+	table-layout: fixed;
 }
 
 .empty-table {

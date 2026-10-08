@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type ChangeEvent } from "react";
+import { useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { createExcelFile } from "./excel-export";
 import { processFiles, type ProcessingResult } from "./processor";
 import "./App.css";
@@ -27,10 +27,19 @@ const OWNER_FILTERS = [
 ] as const;
 
 const PAGE_SIZE = 20;
+const MIN_COLUMN_WIDTH = 80;
+const INITIAL_COLUMN_WIDTHS = [260, 145, 150, ...Array(9).fill(125)];
 const amountFormat = new Intl.NumberFormat("en-US", {
 	minimumFractionDigits: 2,
 	maximumFractionDigits: 2,
 });
+type SortColumn = "total" | "bucket";
+type SortDirection = "asc" | "desc";
+interface TableSort {
+	column: SortColumn;
+	bucketIndex?: number;
+	direction: SortDirection;
+}
 
 function normalizeArabicName(value: string): string {
 	return value
@@ -117,6 +126,9 @@ function App() {
 	);
 	const [showOtherSegments, setShowOtherSegments] = useState(false);
 	const [page, setPage] = useState(1);
+	const [sort, setSort] = useState<TableSort>({ column: "total", direction: "desc" });
+	const [columnWidths, setColumnWidths] = useState(INITIAL_COLUMN_WIDTHS);
+	const resizeStart = useRef<{ columnIndex: number; pointerX: number; width: number } | null>(null);
 	const runId = useRef(0);
 
 	const ownerCounts = useMemo(() => {
@@ -166,7 +178,7 @@ function App() {
 	const visibleRows = useMemo(() => {
 		if (!result) return [];
 		const query = search.trim().toLocaleLowerCase();
-		return selectedRows.filter((customer) => {
+		const filtered = selectedRows.filter((customer) => {
 			const matchesSegment = segmentFilter === "all" || customer.segment === segmentFilter;
 			const matchesSearch =
 				query === "" ||
@@ -176,7 +188,17 @@ function App() {
 					.includes(query);
 			return matchesSegment && matchesSearch;
 		});
-	}, [result, search, segmentFilter, selectedRows]);
+		return [...filtered].sort((first, second) => {
+			const firstValue = sort.column === "total"
+				? first.total
+				: first.buckets[sort.bucketIndex ?? 0] ?? 0;
+			const secondValue = sort.column === "total"
+				? second.total
+				: second.buckets[sort.bucketIndex ?? 0] ?? 0;
+			const comparison = firstValue - secondValue;
+			return sort.direction === "desc" ? -comparison : comparison;
+		});
+	}, [result, search, segmentFilter, selectedRows, sort]);
 
 	const selectedTotal = useMemo(
 		() => selectedRows.reduce((sum, customer) => sum + customer.total, 0),
@@ -245,6 +267,71 @@ function App() {
 		setSelectedOwners(new Set());
 		setShowOtherSegments(false);
 		setPage(1);
+	}
+
+	function toggleSort(column: SortColumn, bucketIndex?: number): void {
+		setSort((current) => {
+			const sameColumn = current.column === column && current.bucketIndex === bucketIndex;
+			return {
+				column,
+				bucketIndex,
+				direction: sameColumn && current.direction === "desc" ? "asc" : "desc",
+			};
+		});
+		setPage(1);
+	}
+
+	function resizeColumn(columnIndex: number, event: ReactPointerEvent<HTMLButtonElement>): void {
+		if (event.type === "pointerdown") {
+			event.preventDefault();
+			event.currentTarget.setPointerCapture(event.pointerId);
+			resizeStart.current = {
+				columnIndex,
+				pointerX: event.clientX,
+				width: columnWidths[columnIndex] ?? INITIAL_COLUMN_WIDTHS[columnIndex] ?? 125,
+			};
+			return;
+		}
+		const start = resizeStart.current;
+		if (event.type === "pointerup" || event.type === "pointercancel") {
+			resizeStart.current = null;
+			return;
+		}
+		if (event.type === "pointermove" && start?.columnIndex === columnIndex) {
+			const nextWidth = Math.max(
+				MIN_COLUMN_WIDTH,
+				start.width + start.pointerX - event.clientX,
+			);
+			setColumnWidths((current) =>
+				current.map((width, index) => index === columnIndex ? nextWidth : width),
+			);
+		}
+	}
+
+	function handleResizeKey(columnIndex: number, event: KeyboardEvent<HTMLButtonElement>): void {
+		if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+		event.preventDefault();
+		const delta = event.key === "ArrowLeft" ? 10 : -10;
+		setColumnWidths((current) =>
+			current.map((width, index) =>
+				index === columnIndex ? Math.max(MIN_COLUMN_WIDTH, width + delta) : width,
+			),
+		);
+	}
+
+	function renderResizeHandle(columnIndex: number, label: string) {
+		return (
+			<button
+				type="button"
+				className="column-resizer"
+				aria-label={`تغيير عرض عمود ${label}`}
+				onPointerDown={(event) => resizeColumn(columnIndex, event)}
+				onPointerMove={(event) => resizeColumn(columnIndex, event)}
+				onPointerUp={(event) => resizeColumn(columnIndex, event)}
+				onPointerCancel={(event) => resizeColumn(columnIndex, event)}
+				onKeyDown={(event) => handleResizeKey(columnIndex, event)}
+			/>
+		);
 	}
 
 	return (
@@ -626,14 +713,35 @@ function App() {
 							{selectedRows.length} حساب محدد · إجمالي {formatAmount(selectedTotal)}
 						</div>
 						<div className="table-scroll">
-							<table>
+							<table
+								className="accounts-table"
+								style={{ width: `${columnWidths.reduce((sum, width) => sum + width, 0)}px` }}
+							>
+								<colgroup>
+									{columnWidths.map((width, index) => <col key={index} style={{ width: `${width}px` }} />)}
+								</colgroup>
 								<thead>
 									<tr>
-										<th scope="col">الحساب / العميل</th>
-										<th scope="col">السيجمينت</th>
-										<th scope="col">مجموعة العميل</th>
-										{result.bucketNames.map((name, index) => <th scope="col" key={`${index}-${name}`}>{name}</th>)}
-										<th scope="col">الرصيد الفعلي</th>
+										<th scope="col">الحساب / العميل{renderResizeHandle(0, "الحساب")}</th>
+										<th scope="col" aria-sort={sort.column === "total" ? (sort.direction === "desc" ? "descending" : "ascending") : "none"}>
+											<button className="sort-button" type="button" onClick={() => toggleSort("total")}>
+												الرصيد الفعلي{sort.column === "total" ? (sort.direction === "desc" ? " ↓" : " ↑") : ""}
+											</button>
+											{renderResizeHandle(1, "الرصيد الفعلي")}
+										</th>
+										<th scope="col">السيجمينت{renderResizeHandle(2, "السيجمينت")}</th>
+										{result.bucketNames.map((name, index) => (
+											<th
+												scope="col"
+												key={`${index}-${name}`}
+												aria-sort={sort.column === "bucket" && sort.bucketIndex === index ? (sort.direction === "desc" ? "descending" : "ascending") : "none"}
+											>
+												<button className="sort-button" type="button" onClick={() => toggleSort("bucket", index)}>
+													{name}{sort.column === "bucket" && sort.bucketIndex === index ? (sort.direction === "desc" ? " ↓" : " ↑") : ""}
+												</button>
+												{renderResizeHandle(index + 3, name)}
+											</th>
+										))}
 									</tr>
 								</thead>
 								<tbody>
@@ -643,12 +751,11 @@ function App() {
 												<strong className="account-name">{customer.name || "—"}</strong>
 												<span className="account-id">{customer.account}</span>
 											</td>
+											<td className="numeric-cell total-cell">{formatAmount(customer.total)}</td>
 											<td><span className="segment-tag">{customer.segment}</span></td>
-											<td>{customer.customerGroup || "—"}</td>
 											{customer.buckets.map((amount, index) => (
 												<td className="numeric-cell" key={`${customer.account}-${index}`}>{formatAmount(amount)}</td>
 											))}
-											<td className="numeric-cell total-cell">{formatAmount(customer.total)}</td>
 										</tr>
 									))}
 								</tbody>
