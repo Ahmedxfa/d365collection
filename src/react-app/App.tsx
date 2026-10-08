@@ -23,7 +23,7 @@ const OWNER_FILTERS = [
 	{ id: "ahmed", name: "أحمد", startsWith: ["احمد"], contains: [] },
 	{ id: "emad", name: "عماد", startsWith: ["عماد"], contains: [] },
 	{ id: "nawaz", name: "نواز", startsWith: [], contains: ["نواز"] },
-	{ id: "mohammed-nasrallah", name: "محمد نصر الله", startsWith: [], contains: ["نصرالله"] },
+	{ id: "mohammed-saad", name: "محمد سعد", startsWith: ["محمد سعد"], contains: [] },
 ] as const;
 
 const PAGE_SIZE = 20;
@@ -483,9 +483,6 @@ function App() {
 						</div>
 						<div className="owner-filter-footer" role="status">
 							<span>ظاهر: {selectedRows.length} من {result.rows.length} حساب</span>
-							{ownerCounts.get("mohammed-nasrallah") === 0 && (
-								<span className="owner-not-found">محمد نصر الله غير موجود بالاسم في ملف السيجمينت الحالي.</span>
-							)}
 						</div>
 					</section>
 
