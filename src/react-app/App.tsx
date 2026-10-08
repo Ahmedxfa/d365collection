@@ -1,6 +1,8 @@
-import { useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { createExcelFile } from "./excel-export";
 import { processFiles, type ProcessingResult } from "./processor";
+import { loadSavedDashboard, saveDashboard } from "./dashboard-storage";
+import { deleteArchive, listArchives, loadArchive, saveArchive, type ArchiveSummary, type ArchivedDataset } from "./cloud-archives";
 import "./App.css";
 
 type UploadKey = "periodOne" | "periodTwo" | "segments";
@@ -28,17 +30,37 @@ const OWNER_FILTERS = [
 
 const PAGE_SIZE = 20;
 const MIN_COLUMN_WIDTH = 80;
-const INITIAL_COLUMN_WIDTHS = [260, 145, 150, ...Array(9).fill(125)];
+const INITIAL_COLUMN_WIDTHS = [260, 145, 150, ...Array(9).fill(125), 145];
+const OVER_30_BUCKET_START = 5;
+const OVER_45_BUCKET_START = 7;
+const COMMISSION_RATE = 0.01;
 const amountFormat = new Intl.NumberFormat("en-US", {
 	minimumFractionDigits: 2,
 	maximumFractionDigits: 2,
 });
+const percentFormat = new Intl.NumberFormat("ar", {
+	minimumFractionDigits: 0,
+	maximumFractionDigits: 2,
+});
+const dateFormat = new Intl.DateTimeFormat("ar", { dateStyle: "medium", timeStyle: "short" });
 type SortColumn = "total" | "bucket";
 type SortDirection = "asc" | "desc";
 interface TableSort {
 	column: SortColumn;
 	bucketIndex?: number;
 	direction: SortDirection;
+}
+
+interface SegmentComparison {
+	segment: string;
+	firstBalance: number;
+	firstOver30: number;
+	firstOver45: number;
+	firstCommission: number;
+	secondBalance: number;
+	secondOver30: number;
+	secondOver45: number;
+	secondCommission: number;
 }
 
 function normalizeArabicName(value: string): string {
@@ -63,6 +85,14 @@ function formatAmount(amount: number): string {
 	return amountFormat.format(amount);
 }
 
+function formatPercent(amount: number, total: number): string {
+	return `${percentFormat.format(total === 0 ? 0 : (amount / total) * 100)}٪`;
+}
+
+function sumBucketsFrom(customer: ProcessingResult["rows"][number], startIndex: number): number {
+	return customer.buckets.slice(startIndex).reduce((sum, amount) => sum + amount, 0);
+}
+
 function downloadExcel(result: ProcessingResult): void {
 	const url = URL.createObjectURL(createExcelFile(result));
 	const link = document.createElement("a");
@@ -76,47 +106,44 @@ function downloadExcel(result: ProcessingResult): void {
 	}, 1000);
 }
 
-function UploadCard({
-	number,
+function HeaderUpload({
 	title,
-	description,
 	accept,
 	file,
+	disabled,
 	onChange,
 }: {
-	number: string;
 	title: string;
-	description: string;
 	accept: string;
 	file: File | null;
+	disabled: boolean;
 	onChange: (event: ChangeEvent<HTMLInputElement>) => void;
 }) {
 	return (
-		<div className={`upload-card${file ? " has-file" : ""}`}>
-			<div className="upload-card-top">
-				<span className="upload-number">{number}</span>
-				<span className="upload-state" aria-label={file ? "تم اختيار الملف" : "بانتظار الملف"}>
-					{file ? "✓" : "↑"}
-				</span>
-			</div>
-			<div className="upload-copy">
-				<h3>{title}</h3>
-				<p>{description}</p>
-			</div>
-			<label className="file-picker">
-				<input type="file" accept={accept} onChange={onChange} />
-				<span>{file ? "تغيير الملف" : "اختيار ملف"}</span>
-			</label>
-			<div className={`file-name${file ? " selected" : ""}`} title={file?.name}>
-				{file ? file.name : "لم يتم اختيار ملف"}
-			</div>
-		</div>
+		<label className={`header-upload${file ? " selected" : ""}`}>
+			<span className="header-upload-title">{title}</span>
+			<span className="header-upload-choice">{file ? "✓ تغيير" : "＋ اختيار"}</span>
+			<span className="header-upload-name" title={file?.name}>{file?.name ?? "لم يتم اختيار ملف"}</span>
+			<input type="file" accept={accept} disabled={disabled} onChange={onChange} />
+		</label>
 	);
 }
 
 function App() {
 	const [uploads, setUploads] = useState<Uploads>(EMPTY_UPLOADS);
 	const [result, setResult] = useState<ProcessingResult | null>(null);
+	const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
+	const [currentArchiveId, setCurrentArchiveId] = useState<string | null>(null);
+	const [archives, setArchives] = useState<ArchiveSummary[]>([]);
+	const [archiveStatus, setArchiveStatus] = useState<"checking" | "connected" | "local">("checking");
+	const [selectedArchiveIds, setSelectedArchiveIds] = useState<[string, string]>(["", ""]);
+	const [comparison, setComparison] = useState<{
+		first: ArchivedDataset;
+		second: ArchivedDataset;
+		rows: SegmentComparison[];
+	} | null>(null);
+	const [isComparing, setIsComparing] = useState(false);
+	const [isRestoring, setIsRestoring] = useState(true);
 	const [isProcessing, setIsProcessing] = useState(false);
 	const [error, setError] = useState("");
 	const [search, setSearch] = useState("");
@@ -130,6 +157,57 @@ function App() {
 	const [columnWidths, setColumnWidths] = useState(INITIAL_COLUMN_WIDTHS);
 	const resizeStart = useRef<{ columnIndex: number; pointerX: number; width: number } | null>(null);
 	const runId = useRef(0);
+
+	useEffect(() => {
+		let isCurrent = true;
+		void (async () => {
+			try {
+				const archiveList = await listArchives();
+				if (!isCurrent) return;
+				setArchives(archiveList);
+				setArchiveStatus("connected");
+				if (archiveList.length > 0) {
+					const latest = await loadArchive(archiveList[0].id);
+					if (!isCurrent) return;
+					setResult(latest);
+					setLastUpdatedAt(latest.createdAt);
+					setCurrentArchiveId(latest.id);
+					setSelectedOwners(new Set(OWNER_FILTERS.map((owner) => owner.id)));
+					setShowOtherSegments(false);
+					setSelectedArchiveIds([archiveList[1]?.id ?? "", archiveList[0].id]);
+					return;
+				}
+				const saved = await loadSavedDashboard();
+				if (isCurrent) {
+					if (saved) {
+						setResult(saved.result);
+						setLastUpdatedAt(saved.updatedAt);
+						setArchiveStatus("local");
+					}
+				}
+			} catch (remoteError: unknown) {
+				if (!isCurrent) return;
+				setArchiveStatus("local");
+				try {
+					const saved = await loadSavedDashboard();
+					if (isCurrent && saved) {
+						setResult(saved.result);
+						setLastUpdatedAt(saved.updatedAt);
+					}
+				} catch (storageError: unknown) {
+					setError(`تعذر استعادة النسخة السحابية والمحلية: ${storageError instanceof Error ? storageError.message : String(remoteError)}`);
+				}
+				if (isCurrent) {
+					setError(`تعذر الاتصال بأرشيف Cloudflare: ${remoteError instanceof Error ? remoteError.message : "خطأ غير معروف."}`);
+				}
+			} finally {
+				if (isCurrent) setIsRestoring(false);
+			}
+		})();
+		return () => {
+			isCurrent = false;
+		};
+	}, []);
 
 	const ownerCounts = useMemo(() => {
 		const counts = new Map<string, number>();
@@ -204,6 +282,27 @@ function App() {
 		() => selectedRows.reduce((sum, customer) => sum + customer.total, 0),
 		[selectedRows],
 	);
+	const selectedOver30 = useMemo(
+		() => selectedRows.reduce((sum, customer) => sum + sumBucketsFrom(customer, OVER_30_BUCKET_START), 0),
+		[selectedRows],
+	);
+	const selectedOver45 = useMemo(
+		() => selectedRows.reduce((sum, customer) => sum + sumBucketsFrom(customer, OVER_45_BUCKET_START), 0),
+		[selectedRows],
+	);
+	const commissionBySegment = useMemo(() => {
+		const totals = new Map<string, { total: number; over30: number; over45: number; count: number }>();
+		for (const customer of selectedRows) {
+			const current = totals.get(customer.segment) ?? { total: 0, over30: 0, over45: 0, count: 0 };
+			totals.set(customer.segment, {
+				total: current.total + customer.total,
+				over30: current.over30 + sumBucketsFrom(customer, OVER_30_BUCKET_START),
+				over45: current.over45 + sumBucketsFrom(customer, OVER_45_BUCKET_START),
+				count: current.count + 1,
+			});
+		}
+		return [...totals.entries()].sort((first, second) => second[1].over45 - first[1].over45);
+	}, [selectedRows]);
 
 	const pageCount = Math.max(1, Math.ceil(visibleRows.length / PAGE_SIZE));
 	const pageRows = visibleRows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
@@ -211,13 +310,15 @@ function App() {
 	const maxSegment = Math.max(0, ...segments.slice(0, 8).map(([, amount]) => amount));
 	const otherSegments = segments.slice(8);
 	const otherSegmentTotal = otherSegments.reduce((sum, [, amount]) => sum + amount, 0);
+	const formattedLastUpdated = lastUpdatedAt
+		? dateFormat.format(new Date(lastUpdatedAt))
+		: "لا توجد بيانات محفوظة";
 
 	async function handleFileChange(key: UploadKey, event: ChangeEvent<HTMLInputElement>) {
 		const file = event.currentTarget.files?.[0] ?? null;
 		event.currentTarget.value = "";
 		const nextUploads = { ...uploads, [key]: file };
 		setUploads(nextUploads);
-		setResult(null);
 		setError("");
 		setSearch("");
 		setSegmentFilter("all");
@@ -239,9 +340,24 @@ function App() {
 				nextUploads.segments,
 			);
 			if (currentRun === runId.current) {
+				const updatedAt = new Date().toISOString();
 				setResult(processed);
+				setLastUpdatedAt(updatedAt);
 				setSelectedOwners(new Set(OWNER_FILTERS.map((owner) => owner.id)));
 				setShowOtherSegments(false);
+				setComparison(null);
+				try {
+					await saveDashboard({ result: processed, updatedAt });
+					const archive = await saveArchive(processed);
+					setCurrentArchiveId(archive.id);
+					setLastUpdatedAt(archive.createdAt);
+					setArchives((current) => [archive, ...current]);
+					setSelectedArchiveIds((current) => [current[0] || current[1], archive.id]);
+					setArchiveStatus("connected");
+				} catch (storageError) {
+					setArchiveStatus("local");
+					setError(`تمت المعالجة محلياً لكن تعذر حفظها في Cloudflare: ${storageError instanceof Error ? storageError.message : "خطأ غير معروف."}`);
+				}
 			}
 		} catch (processingError) {
 			if (currentRun === runId.current) {
@@ -256,17 +372,95 @@ function App() {
 		}
 	}
 
-	function reset(): void {
-		runId.current += 1;
-		setUploads(EMPTY_UPLOADS);
-		setResult(null);
-		setError("");
-		setIsProcessing(false);
-		setSearch("");
-		setSegmentFilter("all");
-		setSelectedOwners(new Set());
-		setShowOtherSegments(false);
-		setPage(1);
+	async function publishLocalArchive(): Promise<void> {
+		if (!result) return;
+		try {
+			const archive = await saveArchive(result);
+			setArchives((current) => [archive, ...current]);
+			setCurrentArchiveId(archive.id);
+			setLastUpdatedAt(archive.createdAt);
+			setArchiveStatus("connected");
+			setError("");
+		} catch (archiveError) {
+			setError(`تعذر نشر النسخة المحلية إلى الأرشيف: ${archiveError instanceof Error ? archiveError.message : "خطأ غير معروف."}`);
+		}
+	}
+
+	async function removeArchive(archive: ArchiveSummary): Promise<void> {
+		if (!window.confirm(`هل تريد حذف نسخة ${dateFormat.format(new Date(archive.createdAt))} نهائياً من الأرشيف؟`)) return;
+		try {
+			await deleteArchive(archive.id);
+			const remaining = archives.filter((item) => item.id !== archive.id);
+			setArchives(remaining);
+			setComparison(null);
+			if (currentArchiveId === archive.id) {
+				setCurrentArchiveId(remaining[0]?.id ?? null);
+				if (remaining[0]) {
+					const latest = await loadArchive(remaining[0].id);
+					setResult(latest);
+					setLastUpdatedAt(latest.createdAt);
+				} else {
+					setResult(null);
+					setLastUpdatedAt(null);
+				}
+			}
+			setSelectedArchiveIds([remaining[1]?.id ?? "", remaining[0]?.id ?? ""]);
+			setError("");
+		} catch (archiveError) {
+			setError(`تعذر حذف النسخة: ${archiveError instanceof Error ? archiveError.message : "خطأ غير معروف."}`);
+		}
+	}
+
+	async function compareArchives(): Promise<void> {
+		const [firstId, secondId] = selectedArchiveIds;
+		if (!firstId || !secondId || firstId === secondId) {
+			setError("اختر نسختين مختلفتين لمقارنة أداء المندوبين.");
+			return;
+		}
+		setIsComparing(true);
+		try {
+			const [first, second] = await Promise.all([loadArchive(firstId), loadArchive(secondId)]);
+			const aggregate = (dataset: ArchivedDataset) => {
+				const totals = new Map<string, Omit<SegmentComparison, "segment">>();
+				for (const customer of dataset.rows) {
+					const current = totals.get(customer.segment) ?? {
+						firstBalance: 0, firstOver30: 0, firstOver45: 0, firstCommission: 0,
+						secondBalance: 0, secondOver30: 0, secondOver45: 0, secondCommission: 0,
+					};
+					current.firstBalance += customer.total;
+					current.firstOver30 += sumBucketsFrom(customer, OVER_30_BUCKET_START);
+					current.firstOver45 += sumBucketsFrom(customer, OVER_45_BUCKET_START);
+					current.firstCommission += sumBucketsFrom(customer, OVER_45_BUCKET_START) * COMMISSION_RATE;
+					totals.set(customer.segment, current);
+				}
+				return totals;
+			};
+			const firstTotals = aggregate(first);
+			const secondTotals = aggregate(second);
+			const rows = [...new Set([...firstTotals.keys(), ...secondTotals.keys()])]
+				.map((segment): SegmentComparison => {
+					const previous = firstTotals.get(segment);
+					const current = secondTotals.get(segment);
+					return {
+						segment,
+						firstBalance: previous?.firstBalance ?? 0,
+						firstOver30: previous?.firstOver30 ?? 0,
+						firstOver45: previous?.firstOver45 ?? 0,
+						firstCommission: previous?.firstCommission ?? 0,
+						secondBalance: current?.firstBalance ?? 0,
+						secondOver30: current?.firstOver30 ?? 0,
+						secondOver45: current?.firstOver45 ?? 0,
+						secondCommission: current?.firstCommission ?? 0,
+					};
+				})
+				.sort((left, right) => (right.secondOver45 - right.firstOver45) - (left.secondOver45 - left.firstOver45));
+			setComparison({ first, second, rows });
+			setError("");
+		} catch (archiveError) {
+			setError(`تعذرت مقارنة النسختين: ${archiveError instanceof Error ? archiveError.message : "خطأ غير معروف."}`);
+		} finally {
+			setIsComparing(false);
+		}
 	}
 
 	function toggleSort(column: SortColumn, bucketIndex?: number): void {
@@ -346,11 +540,54 @@ function App() {
 					</span>
 					<span className="brand-name">مِيزان<span>.</span></span>
 				</a>
-				<div className="privacy-note">
-					<span className="privacy-dot" />
-					تتم المعالجة على جهازك فقط
+				<div className="header-uploads" aria-label="رفع أو تحديث الملفات">
+					<HeaderUpload
+						title="الفترات الأولى"
+						accept=".csv,text/csv"
+						file={uploads.periodOne}
+						disabled={isRestoring}
+						onChange={(event) => void handleFileChange("periodOne", event)}
+					/>
+					<HeaderUpload
+						title="استكمال الفترات"
+						accept=".csv,text/csv"
+						file={uploads.periodTwo}
+						disabled={isRestoring}
+						onChange={(event) => void handleFileChange("periodTwo", event)}
+					/>
+					<HeaderUpload
+						title="ملف السيجمينت"
+						accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+						file={uploads.segments}
+						disabled={isRestoring}
+						onChange={(event) => void handleFileChange("segments", event)}
+					/>
+				</div>
+				<div className="header-data-info">
+					<span>آخر تحديث للبيانات</span>
+					<strong>{isRestoring ? "جاري الاستعادة…" : formattedLastUpdated}</strong>
 				</div>
 			</header>
+			<div className="header-notice" role="status">
+				<span className="privacy-dot" />
+				{archiveStatus === "connected"
+					? "أرشيف Cloudflare مشترك للعامة: أي شخص معه الرابط يمكنه القراءة والرفع والحذف."
+					: archiveStatus === "checking"
+						? "جاري الاتصال بأرشيف Cloudflare…"
+						: "الأرشيف السحابي غير متاح؛ أي بيانات جديدة محفوظة محلياً فقط حتى عودة الاتصال."}
+			</div>
+			{isProcessing && (
+				<div className="status-message processing" role="status">
+					<i className="spinner" />
+					جاري التحقق من الفترات ومطابقة الحسابات…
+				</div>
+			)}
+			{error && (
+				<div className="status-message error" role="alert">
+					<span>!</span>
+					{error}
+				</div>
+			)}
 
 			<section className="hero" id="top">
 				<div className="hero-copy">
@@ -404,65 +641,6 @@ function App() {
 				</div>
 			</section>
 
-			<section className="upload-section" aria-labelledby="upload-title">
-				<div className="section-heading">
-					<div>
-						<p className="section-kicker">ابدأ من هنا</p>
-						<h2 id="upload-title">ملفات التحليل</h2>
-					</div>
-					<span className="file-count">ملفان CSV · ملف سيجمينت Excel</span>
-				</div>
-				<div className="upload-grid">
-					<UploadCard
-						number="01"
-						title="الفترات الأولى"
-						description="الأعمار الحالية وحتى أقل من 37 يوماً"
-						accept=".csv,text/csv"
-						file={uploads.periodOne}
-						onChange={(event) => void handleFileChange("periodOne", event)}
-					/>
-					<UploadCard
-						number="02"
-						title="استكمال الفترات"
-						description="الفترات الإضافية بعد الأعمار المشتركة"
-						accept=".csv,text/csv"
-						file={uploads.periodTwo}
-						onChange={(event) => void handleFileChange("periodTwo", event)}
-					/>
-					<UploadCard
-						number="03"
-						title="ملف السيجمينت"
-						description="ملف Excel يحتوي Customer account وSegment"
-						accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-						file={uploads.segments}
-						onChange={(event) => void handleFileChange("segments", event)}
-					/>
-				</div>
-				<div className="upload-footer">
-					<div className="upload-hint">
-						<span className="lock-icon" aria-hidden="true">⌑</span>
-						الملفات لا تُرفع إلى خادم ولا تُحفظ بعد إغلاق الصفحة.
-					</div>
-					{(uploads.periodOne || uploads.periodTwo || uploads.segments) && (
-						<button className="text-button" type="button" onClick={reset}>
-							مسح الملفات
-						</button>
-					)}
-				</div>
-				{isProcessing && (
-					<div className="status-message processing" role="status">
-						<i className="spinner" />
-						جاري التحقق من الفترات ومطابقة الحسابات…
-					</div>
-				)}
-				{error && (
-					<div className="status-message error" role="alert">
-						<span>!</span>
-						{error}
-					</div>
-				)}
-			</section>
-
 			{result && (
 				<section className="dashboard" aria-labelledby="dashboard-title">
 					<div className="dashboard-heading">
@@ -493,6 +671,105 @@ function App() {
 							</button>
 						</div>
 					</div>
+
+					<section className="panel archive-panel" aria-labelledby="archive-title">
+						<div className="panel-heading">
+							<div>
+								<p className="panel-kicker">Cloudflare D1 · أرشيف مشترك</p>
+								<h3 id="archive-title">نسخ البيانات ومقارنة أداء المندوبين</h3>
+							</div>
+							{archiveStatus === "local" && result && (
+								<button className="button button-dark" type="button" onClick={() => void publishLocalArchive()}>
+									نشر النسخة المحلية
+								</button>
+							)}
+						</div>
+						{archives.length === 0 ? (
+							<p className="archive-empty">
+								لا توجد نسخ في الأرشيف بعد. ارفع الملفات الثلاثة لإنشاء أول نسخة محفوظة على Cloudflare.
+							</p>
+						) : (
+							<>
+								<div className="archive-history">
+									{archives.map((archive) => (
+										<div className="archive-item" key={archive.id}>
+											<div>
+												<strong>{dateFormat.format(new Date(archive.createdAt))}</strong>
+												<span>{archive.rowCount} حساب · رصيد {formatAmount(archive.total)}</span>
+											</div>
+											<button type="button" onClick={() => void removeArchive(archive)}>حذف النسخة</button>
+										</div>
+									))}
+								</div>
+								<div className="comparison-controls">
+									<label>
+										<span>النسخة الأقدم</span>
+										<select
+											value={selectedArchiveIds[0]}
+											onChange={(event) => setSelectedArchiveIds((current) => [event.target.value, current[1]])}
+										>
+											<option value="">اختر نسخة</option>
+											{archives.map((archive) => <option key={archive.id} value={archive.id}>{dateFormat.format(new Date(archive.createdAt))}</option>)}
+										</select>
+									</label>
+									<label>
+										<span>النسخة الأحدث</span>
+										<select
+											value={selectedArchiveIds[1]}
+											onChange={(event) => setSelectedArchiveIds(([first]) => [first, event.target.value])}
+										>
+											<option value="">اختر نسخة</option>
+											{archives.map((archive) => <option key={archive.id} value={archive.id}>{dateFormat.format(new Date(archive.createdAt))}</option>)}
+										</select>
+									</label>
+									<button
+										className="button button-dark"
+										type="button"
+										disabled={isComparing || archives.length < 2}
+										onClick={() => void compareArchives()}
+									>
+										{isComparing ? "جاري المقارنة…" : "مقارنة المندوبين"}
+									</button>
+								</div>
+							</>
+						)}
+						{comparison && (
+							<div className="comparison-results">
+								<p>
+									المقارنة من {dateFormat.format(new Date(comparison.first.createdAt))}
+									{" إلى "}
+									{dateFormat.format(new Date(comparison.second.createdAt))}
+								</p>
+								<div className="comparison-table-scroll">
+									<table className="comparison-table">
+										<thead>
+											<tr>
+												<th scope="col">المندوب / السيجمينت</th>
+												<th scope="col">+30 سابق</th><th scope="col">+30 حالي</th>
+												<th scope="col">+45 سابق</th><th scope="col">+45 حالي</th><th scope="col">فرق +45</th>
+												<th scope="col">العمولة السابقة</th><th scope="col">العمولة الحالية</th><th scope="col">فرق العمولة</th>
+											</tr>
+										</thead>
+										<tbody>
+											{comparison.rows.map((row) => (
+												<tr key={row.segment}>
+													<td>{row.segment}</td>
+													<td className="numeric-cell">{formatAmount(row.firstOver30)}</td>
+													<td className="numeric-cell">{formatAmount(row.secondOver30)}</td>
+													<td className="numeric-cell">{formatAmount(row.firstOver45)}</td>
+													<td className="numeric-cell">{formatAmount(row.secondOver45)}</td>
+													<td className="numeric-cell">{formatAmount(row.secondOver45 - row.firstOver45)}</td>
+													<td className="numeric-cell">{formatAmount(row.firstCommission)}</td>
+													<td className="numeric-cell">{formatAmount(row.secondCommission)}</td>
+													<td className="numeric-cell commission-value">{formatAmount(row.secondCommission - row.firstCommission)}</td>
+												</tr>
+											))}
+										</tbody>
+									</table>
+								</div>
+							</div>
+						)}
+					</section>
 
 					<section className="owner-filter-panel" aria-labelledby="owner-filter-title">
 						<div className="owner-filter-heading">
@@ -594,6 +871,21 @@ function App() {
 							<strong>{selectedRows.filter((customer) => customer.segment !== "غير محدد").length} / {selectedRows.length}</strong>
 							<span className="metric-note">{segments.length} تصنيفاً · المفقود يظهر «غير محدد»</span>
 						</article>
+						<article className="metric-card overdue-metric">
+							<div className="metric-label">المتأخرات فوق 30 يوم</div>
+							<strong>{formatAmount(selectedOver30)}</strong>
+							<span className="metric-note">{formatPercent(selectedOver30, selectedTotal)} من الرصيد الفعلي</span>
+						</article>
+						<article className="metric-card overdue-metric">
+							<div className="metric-label">المتأخرات فوق 45 يوم</div>
+							<strong>{formatAmount(selectedOver45)}</strong>
+							<span className="metric-note">{formatPercent(selectedOver45, selectedTotal)} من الرصيد الفعلي</span>
+						</article>
+						<article className="metric-card commission-metric">
+							<div className="metric-label">العمولة المفقودة للمندوب · 1٪</div>
+							<strong>{formatAmount(selectedOver45 * COMMISSION_RATE)}</strong>
+							<span className="metric-note">محسوبة على إجمالي الرصيد المتأخر فوق 45 يوماً</span>
+						</article>
 					</div>
 
 					<div className="chart-grid">
@@ -674,6 +966,63 @@ function App() {
 						</article>
 					</div>
 
+					<section className="panel commission-panel" aria-labelledby="commission-title">
+						<div className="panel-heading">
+							<div>
+								<p className="panel-kicker">الرصيد المتأخر × نسبة العمولة</p>
+								<h3 id="commission-title">العمولة المفقودة حسب المندوب</h3>
+							</div>
+							<span className="panel-period">1٪ من رصيد +45 يوم</span>
+						</div>
+						<div className="commission-table-scroll">
+							<table className="commission-table">
+								<thead>
+									<tr>
+										<th scope="col">المندوب / السيجمينت</th>
+										<th scope="col">الحسابات</th>
+										<th scope="col">الرصيد الفعلي</th>
+										<th scope="col">فوق 30 يوم</th>
+										<th scope="col">النسبة</th>
+										<th scope="col">فوق 45 يوم</th>
+										<th scope="col">النسبة</th>
+										<th scope="col">العمولة المفقودة</th>
+									</tr>
+								</thead>
+								<tbody>
+									{commissionBySegment.map(([segment, totals]) => (
+										<tr key={segment}>
+											<td><span className="segment-tag">{segment}</span></td>
+											<td className="numeric-cell">{totals.count}</td>
+											<td className="numeric-cell">{formatAmount(totals.total)}</td>
+											<td className="numeric-cell">{formatAmount(totals.over30)}</td>
+											<td className="numeric-cell">{formatPercent(totals.over30, totals.total)}</td>
+											<td className="numeric-cell">{formatAmount(totals.over45)}</td>
+											<td className="numeric-cell">{formatPercent(totals.over45, totals.total)}</td>
+											<td className="numeric-cell commission-value">{formatAmount(totals.over45 * COMMISSION_RATE)}</td>
+										</tr>
+									))}
+									{commissionBySegment.length === 0 && (
+										<tr><td colSpan={8} className="commission-empty">لا توجد حسابات ضمن الأشخاص والسيجمينتات المحددة.</td></tr>
+									)}
+								</tbody>
+								{commissionBySegment.length > 0 && (
+									<tfoot>
+										<tr>
+											<th scope="row">الإجمالي</th>
+											<td className="numeric-cell">{selectedRows.length}</td>
+											<td className="numeric-cell">{formatAmount(selectedTotal)}</td>
+											<td className="numeric-cell">{formatAmount(selectedOver30)}</td>
+											<td className="numeric-cell">{formatPercent(selectedOver30, selectedTotal)}</td>
+											<td className="numeric-cell">{formatAmount(selectedOver45)}</td>
+											<td className="numeric-cell">{formatPercent(selectedOver45, selectedTotal)}</td>
+											<td className="numeric-cell commission-value">{formatAmount(selectedOver45 * COMMISSION_RATE)}</td>
+										</tr>
+									</tfoot>
+								)}
+							</table>
+						</div>
+					</section>
+
 					<section className="panel accounts-panel" aria-labelledby="accounts-title">
 						<div className="accounts-heading">
 							<div>
@@ -742,6 +1091,7 @@ function App() {
 												{renderResizeHandle(index + 3, name)}
 											</th>
 										))}
+										<th scope="col">عمولة 1٪{renderResizeHandle(result.bucketNames.length + 3, "العمولة")}</th>
 									</tr>
 								</thead>
 								<tbody>
@@ -756,6 +1106,9 @@ function App() {
 											{customer.buckets.map((amount, index) => (
 												<td className="numeric-cell" key={`${customer.account}-${index}`}>{formatAmount(amount)}</td>
 											))}
+											<td className="numeric-cell commission-value">
+												{formatAmount(sumBucketsFrom(customer, OVER_45_BUCKET_START) * COMMISSION_RATE)}
+											</td>
 										</tr>
 									))}
 								</tbody>

@@ -8,6 +8,13 @@
 		"enabled": true
 	},
 	"upload_source_maps": true,
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "d365collection",
+			"database_id": "3cb35fe6-ba18-4166-b4a6-71f94fff6008"
+		}
+	],
 	"assets": {
 		"directory": "./dist/client",
 		"not_found_handling": "single-page-application"
