@@ -17,11 +17,38 @@ const EMPTY_UPLOADS: Uploads = {
 	segments: null,
 };
 
+const OWNER_FILTERS = [
+	{ id: "ammar", name: "عمار", startsWith: ["عمار"], contains: [] },
+	{ id: "amjad", name: "أمجد", startsWith: ["امجد"], contains: [] },
+	{ id: "ahmed", name: "أحمد", startsWith: ["احمد"], contains: [] },
+	{ id: "emad", name: "عماد", startsWith: ["عماد"], contains: [] },
+	{ id: "nawaz", name: "نواز", startsWith: [], contains: ["نواز"] },
+	{ id: "mohammed-nasrallah", name: "محمد نصر الله", startsWith: [], contains: ["نصرالله"] },
+] as const;
+
 const PAGE_SIZE = 20;
 const amountFormat = new Intl.NumberFormat("en-US", {
 	minimumFractionDigits: 2,
 	maximumFractionDigits: 2,
 });
+
+function normalizeArabicName(value: string): string {
+	return value
+		.normalize("NFD")
+		.replace(/[\u064B-\u065F\u0670\u0640]/g, "")
+		.replace(/[أإآٱ]/g, "ا")
+		.replace(/ى/g, "ي")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+function ownerForSegment(segment: string): string | null {
+	const normalized = normalizeArabicName(segment);
+	return OWNER_FILTERS.find((owner) =>
+		owner.startsWith.some((prefix) => normalized.startsWith(prefix)) ||
+		owner.contains.some((fragment) => normalized.replace(/\s/g, "").includes(fragment)),
+	)?.id ?? null;
+}
 
 function formatAmount(amount: number): string {
 	return amountFormat.format(amount);
@@ -85,33 +112,61 @@ function App() {
 	const [error, setError] = useState("");
 	const [search, setSearch] = useState("");
 	const [segmentFilter, setSegmentFilter] = useState("all");
+	const [selectedOwners, setSelectedOwners] = useState<Set<string>>(
+		() => new Set(OWNER_FILTERS.map((owner) => owner.id)),
+	);
+	const [showOtherSegments, setShowOtherSegments] = useState(false);
 	const [page, setPage] = useState(1);
 	const runId = useRef(0);
+
+	const ownerCounts = useMemo(() => {
+		const counts = new Map<string, number>();
+		for (const owner of OWNER_FILTERS) counts.set(owner.id, 0);
+		for (const customer of result?.rows ?? []) {
+			const ownerId = ownerForSegment(customer.segment);
+			if (ownerId) counts.set(ownerId, (counts.get(ownerId) ?? 0) + 1);
+		}
+		return counts;
+	}, [result]);
+	const otherSegmentCount = useMemo(
+		() => (result?.rows ?? []).filter((customer) => ownerForSegment(customer.segment) === null).length,
+		[result],
+	);
+
+	const selectedRows = useMemo(() => {
+		if (!result) return [];
+		return result.rows.filter((customer) => {
+			const ownerId = ownerForSegment(customer.segment);
+			return ownerId
+				? selectedOwners.has(ownerId)
+				: showOtherSegments;
+		});
+	}, [result, selectedOwners, showOtherSegments]);
 
 	const segments = useMemo(() => {
 		if (!result) return [];
 		const totalsBySegment = new Map<string, number>();
-		for (const customer of result.rows) {
+		for (const customer of selectedRows) {
 			totalsBySegment.set(
 				customer.segment,
 				(totalsBySegment.get(customer.segment) ?? 0) + customer.total,
 			);
 		}
 		return [...totalsBySegment.entries()].sort((a, b) => b[1] - a[1]);
-	}, [result]);
+	}, [result, selectedRows]);
 
 	const bucketTotals = useMemo(() => {
 		if (!result) return [];
 		return result.bucketNames.map((name, index) => ({
 			name,
-			amount: result.rows.reduce((sum, customer) => sum + customer.buckets[index], 0),
+			amount: selectedRows.reduce((sum, customer) => sum + customer.buckets[index], 0),
 		}));
-	}, [result]);
+	}, [result, selectedRows]);
 
 	const visibleRows = useMemo(() => {
 		if (!result) return [];
 		const query = search.trim().toLocaleLowerCase();
-		return result.rows.filter((customer) => {
+		return selectedRows.filter((customer) => {
 			const matchesSegment = segmentFilter === "all" || customer.segment === segmentFilter;
 			const matchesSearch =
 				query === "" ||
@@ -121,7 +176,12 @@ function App() {
 					.includes(query);
 			return matchesSegment && matchesSearch;
 		});
-	}, [result, search, segmentFilter]);
+	}, [result, search, segmentFilter, selectedRows]);
+
+	const selectedTotal = useMemo(
+		() => selectedRows.reduce((sum, customer) => sum + customer.total, 0),
+		[selectedRows],
+	);
 
 	const pageCount = Math.max(1, Math.ceil(visibleRows.length / PAGE_SIZE));
 	const pageRows = visibleRows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
@@ -139,6 +199,8 @@ function App() {
 		setError("");
 		setSearch("");
 		setSegmentFilter("all");
+		setSelectedOwners(new Set(OWNER_FILTERS.map((owner) => owner.id)));
+		setShowOtherSegments(false);
 		setPage(1);
 		const currentRun = ++runId.current;
 
@@ -154,7 +216,11 @@ function App() {
 				nextUploads.periodTwo,
 				nextUploads.segments,
 			);
-			if (currentRun === runId.current) setResult(processed);
+			if (currentRun === runId.current) {
+				setResult(processed);
+				setSelectedOwners(new Set(OWNER_FILTERS.map((owner) => owner.id)));
+				setShowOtherSegments(false);
+			}
 		} catch (processingError) {
 			if (currentRun === runId.current) {
 				setError(
@@ -176,6 +242,8 @@ function App() {
 		setIsProcessing(false);
 		setSearch("");
 		setSegmentFilter("all");
+		setSelectedOwners(new Set());
+		setShowOtherSegments(false);
 		setPage(1);
 	}
 
@@ -322,22 +390,115 @@ function App() {
 							<button className="button button-quiet" type="button" onClick={() => window.print()}>
 								<span aria-hidden="true">⎙</span> طباعة لوحة العرض
 							</button>
-							<button className="button button-dark" type="button" onClick={() => downloadExcel(result)}>
-								<span aria-hidden="true">↓</span> تنزيل ملف Excel الموحّد
+							<button
+								className="button button-dark"
+								type="button"
+								onClick={() =>
+									downloadExcel({
+										...result,
+										rows: selectedRows,
+										total: selectedTotal,
+										segmentMatches: selectedRows.filter((customer) => customer.segment !== "غير محدد").length,
+									})
+								}
+							>
+								<span aria-hidden="true">↓</span> تنزيل Excel المحدد
 							</button>
 						</div>
 					</div>
 
+					<section className="owner-filter-panel" aria-labelledby="owner-filter-title">
+						<div className="owner-filter-heading">
+							<div>
+								<p className="panel-kicker">إظهار الحسابات التابعة لـ</p>
+								<h3 id="owner-filter-title">اختيار الأشخاص المهمين</h3>
+							</div>
+							<div className="owner-filter-actions">
+								<button
+									type="button"
+									onClick={() => {
+										setSelectedOwners(new Set(OWNER_FILTERS.map((owner) => owner.id)));
+										setShowOtherSegments(false);
+										setPage(1);
+									}}
+								>
+									تحديد المهمين
+								</button>
+								<button
+									type="button"
+									onClick={() => {
+										setSelectedOwners(new Set(OWNER_FILTERS.map((owner) => owner.id)));
+										setShowOtherSegments(true);
+										setPage(1);
+									}}
+								>
+									إظهار الكل
+								</button>
+							</div>
+						</div>
+						<div className="owner-checkbox-grid">
+							{OWNER_FILTERS.map((owner) => {
+								const checked = selectedOwners.has(owner.id);
+								const count = ownerCounts.get(owner.id) ?? 0;
+								return (
+									<label className={`owner-checkbox${checked ? " checked" : ""}`} key={owner.id}>
+										<input
+											type="checkbox"
+											checked={checked}
+											onChange={(event) => {
+												setSelectedOwners((current) => {
+													const next = new Set(current);
+													if (event.target.checked) next.add(owner.id);
+													else next.delete(owner.id);
+													return next;
+												});
+												setSegmentFilter("all");
+												setPage(1);
+											}}
+										/>
+										<span className="custom-checkbox" aria-hidden="true">{checked ? "✓" : ""}</span>
+										<span className="owner-checkbox-label">
+											<strong>{owner.name}</strong>
+											<small>{count > 0 ? `${count} حساب` : "غير موجود في ملف السيجمينت"}</small>
+										</span>
+									</label>
+								);
+							})}
+							<label className={`owner-checkbox other-owner-checkbox${showOtherSegments ? " checked" : ""}`}>
+								<input
+									type="checkbox"
+									checked={showOtherSegments}
+									onChange={(event) => {
+										setShowOtherSegments(event.target.checked);
+										setSegmentFilter("all");
+										setPage(1);
+									}}
+								/>
+								<span className="custom-checkbox" aria-hidden="true">{showOtherSegments ? "✓" : ""}</span>
+								<span className="owner-checkbox-label">
+									<strong>بقية السيجمينتات</strong>
+									<small>{otherSegmentCount} حساب</small>
+								</span>
+							</label>
+						</div>
+						<div className="owner-filter-footer" role="status">
+							<span>ظاهر: {selectedRows.length} من {result.rows.length} حساب</span>
+							{ownerCounts.get("mohammed-nasrallah") === 0 && (
+								<span className="owner-not-found">محمد نصر الله غير موجود بالاسم في ملف السيجمينت الحالي.</span>
+							)}
+						</div>
+					</section>
+
 					<div className="metric-grid">
 						<article className="metric-card metric-primary">
 							<div className="metric-label"><span className="legend-dot dot-second" /> إجمالي الرصيد المعتمد</div>
-							<strong>{formatAmount(result.total)}</strong>
-							<span className="metric-note">من إجمالي التقرير الثاني بعد استكمال الفترات</span>
+							<strong>{formatAmount(selectedTotal)}</strong>
+							<span className="metric-note">مجموع أرصدة الأشخاص والسيجمينتات المحددة</span>
 						</article>
 						<article className="metric-card">
 							<div className="metric-label">الحسابات</div>
-							<strong>{result.rows.length}</strong>
-							<span className="metric-note">تمت مطابقة حسابات الملفين</span>
+							<strong>{selectedRows.length}</strong>
+							<span className="metric-note">من أصل {result.rows.length} حساب</span>
 						</article>
 						<article className="metric-card">
 							<div className="metric-label">الفترات الموحّدة</div>
@@ -346,7 +507,7 @@ function App() {
 						</article>
 						<article className="metric-card">
 							<div className="metric-label">السيجمينت</div>
-							<strong>{result.segmentMatches} / {result.rows.length}</strong>
+							<strong>{selectedRows.filter((customer) => customer.segment !== "غير محدد").length} / {selectedRows.length}</strong>
 							<span className="metric-note">{segments.length} تصنيفاً · المفقود يظهر «غير محدد»</span>
 						</article>
 					</div>
@@ -378,7 +539,7 @@ function App() {
 							</div>
 							<div className="chart-footnote">
 								<span>مجموع الفترات</span>
-								<strong>{formatAmount(result.total)}</strong>
+								<strong>{formatAmount(selectedTotal)}</strong>
 							</div>
 						</article>
 
@@ -424,7 +585,7 @@ function App() {
 							</div>
 							<div className="chart-footnote">
 								<span>الأرصدة غير المصنفة</span>
-								<strong>{result.rows.length - result.segmentMatches} حساب</strong>
+								<strong>{selectedRows.filter((customer) => customer.segment === "غير محدد").length} حساب</strong>
 							</div>
 						</article>
 					</div>
@@ -465,7 +626,7 @@ function App() {
 						<div className="table-summary">
 							عرض <strong>{visibleRows.length === 0 ? 0 : (page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, visibleRows.length)}</strong> من <strong>{visibleRows.length}</strong> نتيجة
 							<span> · </span>
-							{result.rows.length} حساب · إجمالي موحّد {formatAmount(result.total)}
+							{selectedRows.length} حساب محدد · إجمالي {formatAmount(selectedTotal)}
 						</div>
 						<div className="table-scroll">
 							<table>
@@ -520,9 +681,9 @@ function App() {
 
 					<div className="result-note">
 						<span aria-hidden="true">i</span>
-						استخدمنا الأعمدة الستة من ملف الفترات الأول، وأضفنا الفترات غير المشتركة من الملف الثاني. استُبعدت Current و«أقل من 30» التجميعية و«أقل من 37» المكررة من الملف الثاني. 												لا نعتمد إجمالي الرصيد في الملف الأول. نستخدم فتراته للتقسيم، ونضيف الفترات الجديدة فقط من الملف الثاني؛ لا نكرر Current أو «أقل من 30» التجميعية، ولا نستخدم «أقل من 37» من ff-2. الرصيد الفعلي مأخوذ من إجمالي الملف الثاني، ومجموع الفترات التسع يطابق رصيد كل حساب.
+						نعرض فقط الأشخاص والسيجمينتات المحددة؛ أزل علامة الصح لإخفاء حساباتهم من الجدول والملخص والرسوم وملف Excel.
 						{result.segmentMatches < result.rows.length && (
-							<span> لم نجد سيجمينتاً لـ {result.rows.length - result.segmentMatches} حساب؛ تظهر كـ «غير محدد».</span>
+							<span> لم نجد سيجمينتاً لـ {result.rows.length - result.segmentMatches} حساب؛ تظهر كـ «غير محدد» ضمن بقية السيجمينتات.</span>
 						)}
 					</div>
 				</section>
