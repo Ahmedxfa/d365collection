@@ -63,6 +63,17 @@ interface SegmentComparison {
 	secondCommission: number;
 }
 
+interface CollectionPriority {
+	account: string;
+	name: string;
+	segment: string;
+	total: number;
+	over30: number;
+	over45: number;
+	previousOver45: number | null;
+	changeOver45: number | null;
+}
+
 function normalizeArabicName(value: string): string {
 	return value
 		.normalize("NFD")
@@ -134,6 +145,8 @@ function App() {
 	const [result, setResult] = useState<ProcessingResult | null>(null);
 	const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
 	const [currentArchiveId, setCurrentArchiveId] = useState<string | null>(null);
+	const [previousSnapshot, setPreviousSnapshot] = useState<ProcessingResult["rows"] | null>(null);
+	const [previousSnapshotAt, setPreviousSnapshotAt] = useState<string | null>(null);
 	const [archives, setArchives] = useState<ArchiveSummary[]>([]);
 	const [archiveStatus, setArchiveStatus] = useState<"checking" | "connected" | "local">("checking");
 	const [selectedArchiveIds, setSelectedArchiveIds] = useState<[string, string]>(["", ""]);
@@ -167,11 +180,16 @@ function App() {
 				setArchives(archiveList);
 				setArchiveStatus("connected");
 				if (archiveList.length > 0) {
-					const latest = await loadArchive(archiveList[0].id);
+					const [latest, previous] = await Promise.all([
+						loadArchive(archiveList[0].id),
+						archiveList[1] ? loadArchive(archiveList[1].id) : Promise.resolve(null),
+					]);
 					if (!isCurrent) return;
 					setResult(latest);
 					setLastUpdatedAt(latest.createdAt);
 					setCurrentArchiveId(latest.id);
+					setPreviousSnapshot(previous?.rows ?? null);
+					setPreviousSnapshotAt(previous?.createdAt ?? null);
 					setSelectedOwners(new Set(OWNER_FILTERS.map((owner) => owner.id)));
 					setShowOtherSegments(false);
 					setSelectedArchiveIds([archiveList[1]?.id ?? "", archiveList[0].id]);
@@ -290,6 +308,43 @@ function App() {
 		() => selectedRows.reduce((sum, customer) => sum + sumBucketsFrom(customer, OVER_45_BUCKET_START), 0),
 		[selectedRows],
 	);
+	const priorityAccounts = useMemo<CollectionPriority[]>(() => {
+		const previousByAccount = new Map(
+			(previousSnapshot ?? []).map((customer) => [
+				customer.account,
+				sumBucketsFrom(customer, OVER_45_BUCKET_START),
+			]),
+		);
+		return selectedRows
+			.map((customer) => {
+				const previousOver45 = previousByAccount.get(customer.account);
+				const over45 = sumBucketsFrom(customer, OVER_45_BUCKET_START);
+				return {
+					account: customer.account,
+					name: customer.name,
+					segment: customer.segment,
+					total: customer.total,
+					over30: sumBucketsFrom(customer, OVER_30_BUCKET_START),
+					over45,
+					previousOver45: previousOver45 ?? null,
+					changeOver45: previousOver45 === undefined ? null : over45 - previousOver45,
+				};
+			})
+			.filter((customer) => customer.over30 > 0 || customer.over45 > 0)
+			.sort((first, second) =>
+				second.over45 - first.over45 ||
+				second.over30 - first.over30 ||
+				second.total - first.total,
+			);
+	}, [previousSnapshot, selectedRows]);
+	const topPriorityAccounts = priorityAccounts.slice(0, 10);
+	const topPriorityOver45 = topPriorityAccounts.reduce((sum, customer) => sum + customer.over45, 0);
+	const newlyOver45Count = priorityAccounts.filter(
+		(customer) => customer.previousOver45 !== null && customer.previousOver45 === 0 && customer.over45 > 0,
+	).length;
+	const increasedOver45Count = priorityAccounts.filter(
+		(customer) => customer.changeOver45 !== null && customer.changeOver45 > 0,
+	).length;
 	const commissionBySegment = useMemo(() => {
 		const totals = new Map<string, { total: number; over30: number; over45: number; count: number }>();
 		for (const customer of selectedRows) {
@@ -341,6 +396,10 @@ function App() {
 			);
 			if (currentRun === runId.current) {
 				const updatedAt = new Date().toISOString();
+				if (result) {
+					setPreviousSnapshot(result.rows);
+					setPreviousSnapshotAt(lastUpdatedAt);
+				}
 				setResult(processed);
 				setLastUpdatedAt(updatedAt);
 				setSelectedOwners(new Set(OWNER_FILTERS.map((owner) => owner.id)));
@@ -396,12 +455,19 @@ function App() {
 			if (currentArchiveId === archive.id) {
 				setCurrentArchiveId(remaining[0]?.id ?? null);
 				if (remaining[0]) {
-					const latest = await loadArchive(remaining[0].id);
+					const [latest, previous] = await Promise.all([
+						loadArchive(remaining[0].id),
+						remaining[1] ? loadArchive(remaining[1].id) : Promise.resolve(null),
+					]);
 					setResult(latest);
 					setLastUpdatedAt(latest.createdAt);
+					setPreviousSnapshot(previous?.rows ?? null);
+					setPreviousSnapshotAt(previous?.createdAt ?? null);
 				} else {
 					setResult(null);
 					setLastUpdatedAt(null);
+					setPreviousSnapshot(null);
+					setPreviousSnapshotAt(null);
 				}
 			}
 			setSelectedArchiveIds([remaining[1]?.id ?? "", remaining[0]?.id ?? ""]);
@@ -887,6 +953,92 @@ function App() {
 							<span className="metric-note">محسوبة على إجمالي الرصيد المتأخر فوق 45 يوماً</span>
 						</article>
 					</div>
+
+					<section className="panel collection-priority-panel" aria-labelledby="collection-priority-title">
+						<div className="panel-heading">
+							<div>
+								<p className="panel-kicker">ابدأ بالحسابات الأعلى تأثيراً</p>
+								<h3 id="collection-priority-title">أولويات التحصيل حسب الرصيد المتأخر</h3>
+							</div>
+							<span className="panel-period">
+								{previousSnapshotAt
+									? `التغير مقابل ${dateFormat.format(new Date(previousSnapshotAt))}`
+									: "لا توجد نسخة سابقة لقياس التغير"}
+							</span>
+						</div>
+						<div className="priority-insights" aria-live="polite">
+							<div>
+								<span>حصة أعلى 10 حسابات من +45</span>
+								<strong>{formatPercent(topPriorityOver45, selectedOver45)}</strong>
+								<small>{formatAmount(topPriorityOver45)} من {formatAmount(selectedOver45)}</small>
+							</div>
+							<div>
+								<span>حسابات دخلت +45 منذ النسخة السابقة</span>
+								<strong>{previousSnapshot ? newlyOver45Count : "—"}</strong>
+								<small>{previousSnapshot ? "تستحق متابعة مبكرة" : "ارفع تحديثاً آخر لبدء المقارنة"}</small>
+							</div>
+							<div>
+								<span>حسابات ارتفع لديها رصيد +45</span>
+								<strong>{previousSnapshot ? increasedOver45Count : "—"}</strong>
+								<small>{previousSnapshot ? "مقارنة بالقطة السابقة" : "لا يوجد خط أساس بعد"}</small>
+							</div>
+						</div>
+						<div className="priority-table-scroll">
+							<table className="priority-table">
+								<thead>
+									<tr>
+										<th scope="col">#</th>
+										<th scope="col">الحساب / العميل</th>
+										<th scope="col">المندوب</th>
+										<th scope="col">الرصيد الفعلي</th>
+										<th scope="col">متأخر +30</th>
+										<th scope="col">متأخر +45</th>
+										<th scope="col">حصة +45 من المحفظة</th>
+										<th scope="col">التغير +45</th>
+										<th scope="col">إشارة متابعة</th>
+									</tr>
+								</thead>
+								<tbody>
+									{topPriorityAccounts.map((customer, index) => {
+										const ownerTotal = commissionBySegment.find(([segment]) => segment === customer.segment)?.[1].over45 ?? 0;
+										const signal = customer.previousOver45 === null
+											? "أولوية حالية"
+											: customer.previousOver45 === 0 && customer.over45 > 0
+												? "دخل شريحة +45"
+												: customer.changeOver45 !== null && customer.changeOver45 > 0
+													? "ارتفع رصيد +45"
+													: customer.changeOver45 !== null && customer.changeOver45 < 0
+														? "انخفض رصيد +45"
+														: "مستقر";
+										return (
+											<tr key={customer.account}>
+												<td>{index + 1}</td>
+												<td>
+													<strong className="account-name">{customer.name || "—"}</strong>
+													<span className="account-id">{customer.account}</span>
+												</td>
+												<td><span className="segment-tag">{customer.segment}</span></td>
+												<td className="numeric-cell">{formatAmount(customer.total)}</td>
+												<td className="numeric-cell">{formatAmount(customer.over30)}</td>
+												<td className="numeric-cell priority-over45">{formatAmount(customer.over45)}</td>
+												<td className="numeric-cell">{formatPercent(customer.over45, ownerTotal)}</td>
+												<td className={`numeric-cell${customer.changeOver45 !== null && customer.changeOver45 > 0 ? " priority-increase" : customer.changeOver45 !== null && customer.changeOver45 < 0 ? " priority-decrease" : ""}`}>
+													{customer.changeOver45 === null ? "—" : `${customer.changeOver45 > 0 ? "+" : ""}${formatAmount(customer.changeOver45)}`}
+												</td>
+												<td><span className={`priority-signal${signal.includes("دخل") || signal.includes("ارتفع") ? " warning" : signal.includes("انخفض") ? " easing" : ""}`}>{signal}</span></td>
+											</tr>
+										);
+									})}
+									{topPriorityAccounts.length === 0 && (
+										<tr><td className="priority-empty" colSpan={9}>لا توجد أرصدة متأخرة ضمن الأشخاص والسيجمينتات المحددة.</td></tr>
+									)}
+								</tbody>
+							</table>
+						</div>
+						<p className="priority-caveat">
+							ترتيب الأولوية يعتمد على حجم الرصيد المتأخر، وليس على توقع التحصيل. انخفاض +45 لا يثبت أن المبلغ تم تحصيله؛ قد يتأثر بمبيعات أو مرتجعات أو تسويات بين النسختين.
+						</p>
+					</section>
 
 					<div className="chart-grid">
 						<article className="panel age-panel">

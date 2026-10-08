@@ -1254,6 +1254,129 @@
 	text-align: right;
 }
 
+.collection-priority-panel {
+	margin-top: 15px;
+	padding: 18px 20px 14px;
+}
+
+.collection-priority-panel .panel-heading {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+}
+
+.priority-insights {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 9px;
+	margin: 14px 0;
+}
+
+.priority-insights > div {
+	min-width: 0;
+	display: grid;
+	gap: 5px;
+	padding: 10px 12px;
+	border: 1px solid #e9eee8;
+	border-radius: 7px;
+	background: #fafcf9;
+}
+
+.priority-insights span {
+	color: #718078;
+	font-size: 9px;
+}
+
+.priority-insights strong {
+	color: #24483d;
+	font-size: 17px;
+	font-variant-numeric: tabular-nums;
+}
+
+.priority-insights small {
+	color: #97a19c;
+	font-size: 8px;
+}
+
+.priority-table-scroll {
+	overflow-x: auto;
+}
+
+.priority-table {
+	min-width: 1020px;
+}
+
+.priority-table th,
+.priority-table td {
+	padding: 9px 10px;
+	border-bottom: 1px solid #edf0ed;
+	font-size: 9px;
+}
+
+.priority-table th {
+	background: #f6f8f5;
+	color: #77857f;
+	text-align: right;
+}
+
+.priority-table tbody tr:hover {
+	background: #fbfcfa;
+}
+
+.priority-table .account-name,
+.priority-table .account-id {
+	max-width: 200px;
+}
+
+.priority-over45 {
+	color: #9b5e25;
+	font-weight: 750;
+}
+
+.priority-increase {
+	color: #a64736;
+	font-weight: 700;
+}
+
+.priority-decrease {
+	color: #247b64;
+	font-weight: 700;
+}
+
+.priority-signal {
+	display: inline-block;
+	padding: 4px 7px;
+	border-radius: 5px;
+	background: #f1f5f1;
+	color: #687a70;
+	font-size: 8px;
+	white-space: nowrap;
+}
+
+.priority-signal.warning {
+	background: #fff2e4;
+	color: #9a5b1b;
+}
+
+.priority-signal.easing {
+	background: #eaf6ee;
+	color: #287451;
+}
+
+.priority-empty {
+	padding: 22px !important;
+	color: #89958f !important;
+	text-align: center;
+}
+
+.priority-caveat {
+	margin: 10px 0 0;
+	color: #8b9690;
+	font-size: 8px;
+	line-height: 1.7;
+}
+
 .archive-panel > .panel-heading > .button {
 	flex: 0 0 auto;
 }
@@ -1717,6 +1840,20 @@ td:first-child {
 	.archive-panel .panel-heading {
 		align-items: flex-start;
 		flex-direction: column;
+	}
+
+	.collection-priority-panel {
+		padding: 15px 12px 12px;
+	}
+
+	.collection-priority-panel .panel-heading {
+		align-items: flex-start;
+		flex-direction: column;
+	}
+
+	.priority-insights {
+		grid-template-columns: 1fr;
+		gap: 6px;
 	}
 
 	.comparison-controls {
