@@ -1,90 +1,29 @@
-# React + Vite + Hono + Cloudflare Workers
+# مِيزان — دمج فترات أعمار الديون
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/cloudflare/templates/tree/main/vite-react-template)
+تطبيق ويب يدمج تقريري أعمار ديون من Dynamics لنفس العملاء مع ملف السيجمينت، ويصدر ملف Excel موحّداً ولوحة عرض.
 
-This template provides a minimal setup for building a React application with TypeScript and Vite, designed to run on Cloudflare Workers. It features hot module replacement, ESLint integration, and the flexibility of Workers deployments.
-
-![React + TypeScript + Vite + Cloudflare Workers](https://imagedelivery.net/wSMYJvS3Xw-n339CbDyDIA/fc7b4b62-442b-4769-641b-ad4422d74300/public)
-
-<!-- dash-content-start -->
-
-🚀 Supercharge your web development with this powerful stack:
-
-- [**React**](https://react.dev/) - A modern UI library for building interactive interfaces
-- [**Vite**](https://vite.dev/) - Lightning-fast build tooling and development server
-- [**Hono**](https://hono.dev/) - Ultralight, modern backend framework
-- [**Cloudflare Workers**](https://developers.cloudflare.com/workers/) - Edge computing platform for global deployment
-
-### ✨ Key Features
-
-- 🔥 Hot Module Replacement (HMR) for rapid development
-- 📦 TypeScript support out of the box
-- 🛠️ ESLint configuration included
-- ⚡ Zero-config deployment to Cloudflare's global network
-- 🎯 API routes with Hono's elegant routing
-- 🔄 Full-stack development setup
-- 🔎 Built-in Observability to monitor your Worker
-
-Get started in minutes with local development or deploy directly via the Cloudflare dashboard. Perfect for building modern, performant web applications at the edge.
-
-<!-- dash-content-end -->
-
-## Getting Started
-
-To start a new project with this template, run:
-
-```bash
-npm create cloudflare@latest -- --template=cloudflare/templates/vite-react-template
-```
-
-A live deployment of this template is available at:
-[https://react-vite-template.templates.workers.dev](https://react-vite-template.templates.workers.dev)
-
-## Development
-
-Install dependencies:
+## التشغيل
 
 ```bash
 npm install
-```
-
-Start the development server with:
-
-```bash
 npm run dev
 ```
 
-Your application will be available at [http://localhost:5173](http://localhost:5173).
+## طريقة الاستخدام
 
-## Production
+1. ارفع ملف CSV الذي يحتوي الفترات الأولى (Current وحتى أقل من 37 يوماً).
+2. ارفع ملف CSV الذي يحتوي الفترات اللاحقة.
+3. ارفع ملف Excel بصيغة `.xlsx` الذي يحتوي عمودي `Customer account` و`Segment`.
+4. تبدأ المعالجة تلقائياً عند اختيار الملفات الثلاثة، وتتم المطابقة حسب رقم الحساب.
+5. نزّل ملف Excel الموحّد أو اطبع لوحة العرض.
 
-Build your project for production:
+يستخدم الدمج الفترات الست من الملف الأول، ويضيف الفترات الثلاث اللاحقة من الملف الثاني (`أقل من 45`، `45–60`، `60+`). يستبعد الأعمدة المشتركة أو التجميعية في الملف الثاني (`Current` و`أقل من 30` و`أقل من 37`). لا يعتمد الرصيد الإجمالي في الملف الأول؛ يُستخدم إجمالي الملف الثاني كالرصيد الفعلي، ويتحقق التطبيق من أن مجموع الفترات التسع يطابق رصيد كل حساب.
+
+تتم قراءة الملفات ومعالجتها في المتصفح، ولا تُرسل إلى الخادم أو تُحفظ بواسطة التطبيق.
+
+## البناء والنشر
 
 ```bash
 npm run build
+npm run deploy
 ```
-
-Preview your build locally:
-
-```bash
-npm run preview
-```
-
-Deploy your project to Cloudflare Workers:
-
-```bash
-npm run build && npm run deploy
-```
-
-Monitor your workers:
-
-```bash
-npx wrangler tail
-```
-
-## Additional Resources
-
-- [Cloudflare Workers Documentation](https://developers.cloudflare.com/workers/)
-- [Vite Documentation](https://vitejs.dev/guide/)
-- [React Documentation](https://reactjs.org/)
-- [Hono Documentation](https://hono.dev/)
