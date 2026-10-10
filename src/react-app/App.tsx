@@ -839,7 +839,16 @@ function App() {
 
 			<section className="sales-dashboard-hero" id="top" aria-labelledby="sales-dashboard-title">
 				<div className="sales-dashboard-heading">
-					<h1 id="sales-dashboard-title">لوحة تقييم الأداء</h1>
+					<div className="sales-heading-title">
+						<h1 id="sales-dashboard-title">لوحة تقييم الأداء</h1>
+						<div className="new-over30-badge" title={dashboardPreviousRows
+							? `إجمالي رصيد +30 لهذه الحسابات: ${formatAmount(activeNewlyOver30Balance)}`
+							: "اختر فترة مقارنة لعرض الحسابات الجديدة فوق 30 يوماً"}>
+							<span>دخلت +30</span>
+							<strong>{dashboardPreviousRows ? activeNewlyOver30Rows.length : "—"}</strong>
+							<small>حساب</small>
+						</div>
+					</div>
 					{archives.length > 0 && (
 						<div className="comparison-controls dashboard-comparison-controls">
 							<span className="comparison-strip-label">مقارنة:</span>
@@ -960,6 +969,9 @@ function App() {
 								<span>الرصيد بين 30–45 يوماً</span>
 								<strong>{formatAmount(activeRepresentative30To45)}</strong>
 								<small>{formatPercent(activeRepresentative30To45, activeRepresentativeTotal)} من المحفظة · فترتا 30–37 و37–45 فقط</small>
+								<small className="rep-kpi-commission">
+									العمولة المعرّضة للفقد (1٪): <strong>{formatAmount(activeRepresentative30To45 * COMMISSION_RATE)}</strong>
+								</small>
 							</article>
 							<article className="rep-kpi-card rep-kpi-risk">
 								<span>الرصيد فوق 45 يوماً</span>
@@ -970,16 +982,6 @@ function App() {
 								<span>العمولة المفقودة التقديرية · +45 · 1٪</span>
 								<strong>{formatAmount(activeRepresentativeOver45 * COMMISSION_RATE)}</strong>
 								<small>تقدير العمولة المرتبطة بالرصيد فوق 45 يوماً</small>
-							</article>
-							<article className="rep-kpi-card rep-kpi-warning">
-								<span>العمولة المعرّضة للفقد · 30–45 · 1٪</span>
-								<strong>{formatAmount(activeRepresentative30To45 * COMMISSION_RATE)}</strong>
-								<small>الرصيد 30–45: {formatAmount(activeRepresentative30To45)}</small>
-							</article>
-							<article className="rep-kpi-card rep-kpi-warning">
-								<span>حسابات دخلت +30 منذ فترة الأساس</span>
-								<strong>{dashboardPreviousRows ? activeNewlyOver30Rows.length : "—"}</strong>
-								<small>{dashboardPreviousRows ? `أرصدة +30 لهذه الحسابات: ${formatAmount(activeNewlyOver30Balance)}` : "اختر فترة مقارنة لعرض التغير"}</small>
 							</article>
 						</div>
 						<div className="rep-chart-grid">
@@ -1094,9 +1096,7 @@ function App() {
 								</div>
 								<div className="rep-signal-list">
 									<div><span>حسابات عليها رصيد +45</span><strong>{activeRepresentativeRows.filter((customer) => sumBucketsFrom(customer, OVER_45_BUCKET_START) > 0).length}</strong></div>
-									<div className="signal-worsened"><span>دخلت +30 منذ فترة الأساس</span><strong>{dashboardPreviousRows ? activeNewlyOver30Rows.length : "—"}</strong></div>
 									<div className="signal-improved"><span>انخفض رصيد +45 عن فترة الأساس</span><strong>{dashboardPreviousRows ? activeReducedOver45Count : "—"}</strong></div>
-									<div className="signal-worsened"><span>عمولة معرضة للفقد · رصيد 30–45 · 1٪</span><strong>{formatAmount(activeRepresentative30To45 * COMMISSION_RATE)}</strong></div>
 								</div>
 							</article>
 						</div>
