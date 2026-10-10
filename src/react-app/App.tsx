@@ -367,10 +367,6 @@ function App() {
 		(sum, customer) => sum + sumBucketsThrough(customer, 3),
 		0,
 	);
-	const activeRepresentativeUnder45 = activeRepresentativeRows.reduce(
-		(sum, customer) => sum + sumBucketsThrough(customer, 6),
-		0,
-	);
 	const activeRepresentativeOver45 = activeRepresentativeRows.reduce(
 		(sum, customer) => sum + sumBucketsFrom(customer, OVER_45_BUCKET_START),
 		0,
@@ -1035,10 +1031,10 @@ function App() {
 								<strong>{formatAmount(activeRepresentativeUnder21)}</strong>
 								<small>{formatPercent(activeRepresentativeUnder21, activeRepresentativeTotal)} من المحفظة · Current وحتى فترة أقل من 21</small>
 							</article>
-							<article className="rep-kpi-card rep-kpi-under45">
-								<span>الرصيد حتى 45 يوماً</span>
-								<strong>{formatAmount(activeRepresentativeUnder45)}</strong>
-								<small>{formatPercent(activeRepresentativeUnder45, activeRepresentativeTotal)} من المحفظة · الفترات حتى أقل من 45</small>
+							<article className="rep-kpi-card rep-kpi-warning">
+								<span>الرصيد بين 30–45 يوماً</span>
+								<strong>{formatAmount(activeRepresentative30To45)}</strong>
+								<small>{formatPercent(activeRepresentative30To45, activeRepresentativeTotal)} من المحفظة · فترتا 30–37 و37–45 فقط</small>
 							</article>
 							<article className="rep-kpi-card rep-kpi-risk">
 								<span>الرصيد فوق 45 يوماً</span>
