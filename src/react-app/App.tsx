@@ -65,17 +65,6 @@ interface SegmentComparison {
 	secondCommission: number;
 }
 
-interface CollectionPriority {
-	account: string;
-	name: string;
-	segment: string;
-	total: number;
-	over30: number;
-	over45: number;
-	previousOver45: number | null;
-	changeOver45: number | null;
-}
-
 interface ArchiveSnapshotRows {
 	id: string;
 	createdAt: string;
@@ -474,6 +463,7 @@ function App() {
 		1,
 		...activeRepresentativeRows.flatMap((customer) => customer.buckets.map((amount) => Math.abs(amount))),
 	);
+	const maxBucket = Math.max(0, ...activeBucketTotals.map((bucket) => bucket.amount));
 	const activeHeatmapRows = [...activeRepresentativeRows].sort((first, second) => {
 		let difference: number;
 		switch (heatmapSort.column) {
@@ -494,46 +484,26 @@ function App() {
 		return heatmapSort.direction === "desc" ? -difference : difference;
 	});
 
-	const segments = useMemo(() => {
-		if (!result) return [];
+	const activeSegments = useMemo(() => {
 		const totalsBySegment = new Map<string, number>();
-		for (const customer of selectedRows) {
+		for (const customer of activeRepresentativeRows) {
 			totalsBySegment.set(
 				customer.segment,
 				(totalsBySegment.get(customer.segment) ?? 0) + customer.total,
 			);
 		}
 		return [...totalsBySegment.entries()].sort((a, b) => b[1] - a[1]);
-	}, [result, selectedRows]);
-
-	const bucketTotals = useMemo(() => {
-		if (!result) return [];
-		return result.bucketNames.map((name, index) => ({
-			name,
-			amount: selectedRows.reduce((sum, customer) => sum + customer.buckets[index], 0),
-		}));
-	}, [result, selectedRows]);
+	}, [activeRepresentativeRows]);
 
 	const selectedTotal = useMemo(
 		() => selectedRows.reduce((sum, customer) => sum + customer.total, 0),
-		[selectedRows],
-	);
-	const selectedOver30 = useMemo(
-		() => selectedRows.reduce((sum, customer) => sum + sumBucketsFrom(customer, OVER_30_BUCKET_START), 0),
-		[selectedRows],
-	);
-	const selected30To45 = useMemo(
-		() => selectedRows.reduce(
-			(sum, customer) => sum + amountBetweenBuckets(customer, OVER_30_BUCKET_START, OVER_45_BUCKET_START - 1),
-			0,
-		),
 		[selectedRows],
 	);
 	const selectedOver45 = useMemo(
 		() => selectedRows.reduce((sum, customer) => sum + sumBucketsFrom(customer, OVER_45_BUCKET_START), 0),
 		[selectedRows],
 	);
-	const priorityAccounts = useMemo<CollectionPriority[]>(() => {
+	const priorityAccounts = useMemo(() => {
 		const previousByAccount = new Map(
 			(previousSnapshot ?? []).map((customer) => [
 				customer.account,
@@ -542,25 +512,14 @@ function App() {
 		);
 		return selectedRows
 			.map((customer) => {
-				const previousOver45 = previousByAccount.get(customer.account);
-				const over45 = sumBucketsFrom(customer, OVER_45_BUCKET_START);
 				return {
-					account: customer.account,
-					name: customer.name,
-					segment: customer.segment,
-					total: customer.total,
 					over30: sumBucketsFrom(customer, OVER_30_BUCKET_START),
-					over45,
-					previousOver45: previousOver45 ?? null,
-					changeOver45: previousOver45 === undefined ? null : over45 - previousOver45,
+					over45: sumBucketsFrom(customer, OVER_45_BUCKET_START),
+					previousOver45: previousByAccount.get(customer.account) ?? null,
 				};
 			})
 			.filter((customer) => customer.over30 > 0 || customer.over45 > 0)
-			.sort((first, second) =>
-				second.over45 - first.over45 ||
-				second.over30 - first.over30 ||
-				second.total - first.total,
-			);
+			.sort((first, second) => second.over45 - first.over45);
 	}, [previousSnapshot, selectedRows]);
 	const topPriorityAccounts = priorityAccounts.slice(0, 10);
 	const topPriorityOver45 = topPriorityAccounts.reduce((sum, customer) => sum + customer.over45, 0);
@@ -568,7 +527,7 @@ function App() {
 		(customer) => customer.previousOver45 !== null && customer.previousOver45 === 0 && customer.over45 > 0,
 	).length;
 	const increasedOver45Count = priorityAccounts.filter(
-		(customer) => customer.changeOver45 !== null && customer.changeOver45 > 0,
+		(customer) => customer.previousOver45 !== null && customer.over45 > customer.previousOver45,
 	).length;
 
 	function selectRepresentative(ownerId: string): void {
@@ -581,23 +540,8 @@ function App() {
 			setShowOtherSegments(false);
 		}
 	}
-	const commissionBySegment = useMemo(() => {
-		const totals = new Map<string, { total: number; over30: number; over45: number; count: number }>();
-		for (const customer of selectedRows) {
-			const current = totals.get(customer.segment) ?? { total: 0, over30: 0, over45: 0, count: 0 };
-			totals.set(customer.segment, {
-				total: current.total + customer.total,
-				over30: current.over30 + sumBucketsFrom(customer, OVER_30_BUCKET_START),
-				over45: current.over45 + sumBucketsFrom(customer, OVER_45_BUCKET_START),
-				count: current.count + 1,
-			});
-		}
-		return [...totals.entries()].sort((first, second) => second[1].over45 - first[1].over45);
-	}, [selectedRows]);
-
-	const maxBucket = Math.max(0, ...bucketTotals.map((bucket) => bucket.amount));
-	const maxSegment = Math.max(0, ...segments.slice(0, 8).map(([, amount]) => amount));
-	const otherSegments = segments.slice(8);
+	const maxSegment = Math.max(0, ...activeSegments.slice(0, 8).map(([, amount]) => amount));
+	const otherSegments = activeSegments.slice(8);
 	const otherSegmentTotal = otherSegments.reduce((sum, [, amount]) => sum + amount, 0);
 	const formattedBalanceDate = result
 		? formatReportDate(result.reportDate)
@@ -1100,6 +1044,83 @@ function App() {
 								</div>
 							</article>
 						</div>
+						<div className="chart-grid">
+							<article className="panel age-panel">
+								<div className="panel-heading">
+									<div>
+										<p className="panel-kicker">مجموع الأرصدة حسب الفترات</p>
+										<h3>توزيع إجمالي الرصيد</h3>
+									</div>
+									<span className="panel-icon">▥</span>
+								</div>
+								<div className="age-chart">
+									{activeBucketTotals.map((bucket, index) => (
+										<div className="age-row" key={`${index}-${bucket.name}`}>
+											<div className="age-label" title={bucket.name}>
+												<span>{bucket.name}</span>
+												<strong>{formatAmount(bucket.amount)}</strong>
+											</div>
+											<div className="bar-track">
+												<div
+													className={`bar-fill age-fill segment-color-${index % 5}${index >= OVER_30_BUCKET_START && index < OVER_45_BUCKET_START ? ` aging-warning-${index}` : ""}`}
+													style={{ width: `${Math.max(0, (bucket.amount / Math.max(maxBucket, 1)) * 100)}%` }}
+												/>
+											</div>
+										</div>
+									))}
+								</div>
+								<div className="chart-footnote">
+									<span>مجموع الفترات</span>
+									<strong>{formatAmount(activeRepresentativeTotal)}</strong>
+								</div>
+							</article>
+
+							<article className="panel segment-panel">
+								<div className="panel-heading">
+									<div>
+										<p className="panel-kicker">حسب المندوب</p>
+										<h3>الرصيد حسب المندوب</h3>
+									</div>
+									<span className="panel-period">{activeSegments.length} مندوب</span>
+								</div>
+								<div className="segment-chart">
+									{activeSegments.slice(0, 8).map(([representative, amount], index) => (
+										<div className="segment-row" key={representative}>
+											<div className="segment-label" title={representative}>
+												<span className={`segment-dot segment-color-${index % 5}`} />
+												<span>{representative}</span>
+												<strong>{formatAmount(amount)}</strong>
+											</div>
+											<div className="bar-track segment-track">
+												<div
+													className={`bar-fill segment-fill segment-color-${index % 5}`}
+													style={{ width: `${Math.max(0, (amount / Math.max(maxSegment, 1)) * 100)}%` }}
+												/>
+											</div>
+										</div>
+									))}
+									{otherSegments.length > 0 && (
+										<div className="segment-row">
+											<div className="segment-label">
+												<span className="segment-dot segment-color-other" />
+												<span>بقية المندوبين ({otherSegments.length})</span>
+												<strong>{formatAmount(otherSegmentTotal)}</strong>
+											</div>
+											<div className="bar-track segment-track">
+												<div
+													className="bar-fill segment-fill segment-color-other"
+													style={{ width: `${Math.max(0, (otherSegmentTotal / Math.max(maxSegment, 1)) * 100)}%` }}
+												/>
+											</div>
+										</div>
+									)}
+								</div>
+								<div className="chart-footnote">
+									<span>مندوبون غير محددين</span>
+									<strong>{activeRepresentativeRows.filter((customer) => customer.segment === "غير محدد").length} حساب</strong>
+								</div>
+							</article>
+						</div>
 						<article className="rep-chart-card rep-heatmap-card">
 							<div className="rep-chart-heading">
 								<div>
@@ -1284,49 +1305,6 @@ function App() {
 						)}
 					</section>
 
-					<div className="metric-grid">
-						<article className="metric-card metric-primary">
-							<div className="metric-label"><span className="legend-dot dot-second" /> إجمالي الرصيد المعتمد</div>
-							<strong>{formatAmount(selectedTotal)}</strong>
-							<span className="metric-note">مجموع أرصدة الأشخاص والسيجمينتات المحددة</span>
-						</article>
-						<article className="metric-card">
-							<div className="metric-label">الحسابات</div>
-							<strong>{selectedRows.length}</strong>
-							<span className="metric-note">من أصل {result.rows.length} حساب</span>
-						</article>
-						<article className="metric-card">
-							<div className="metric-label">الفترات الموحّدة</div>
-							<strong>{result.bucketNames.length}</strong>
-							<span className="metric-note">بعد حذف الفترات المشتركة والتجميعية</span>
-						</article>
-						<article className="metric-card">
-							<div className="metric-label">السيجمينت</div>
-							<strong>{selectedRows.filter((customer) => customer.segment !== "غير محدد").length} / {selectedRows.length}</strong>
-							<span className="metric-note">{segments.length} تصنيفاً · المفقود يظهر «غير محدد»</span>
-						</article>
-						<article className="metric-card overdue-metric">
-							<div className="metric-label">المتأخرات فوق 30 يوم</div>
-							<strong>{formatAmount(selectedOver30)}</strong>
-							<span className="metric-note">{formatPercent(selectedOver30, selectedTotal)} من الرصيد الفعلي</span>
-						</article>
-						<article className="metric-card aging-30-45-metric">
-							<div className="metric-label">الرصيد بين 30–45 يوم</div>
-							<strong>{formatAmount(selected30To45)}</strong>
-							<span className="metric-note">{formatPercent(selected30To45, selectedTotal)} من الرصيد الفعلي · هذه الشريحة فقط</span>
-						</article>
-						<article className="metric-card overdue-metric">
-							<div className="metric-label">المتأخرات فوق 45 يوم</div>
-							<strong>{formatAmount(selectedOver45)}</strong>
-							<span className="metric-note">{formatPercent(selectedOver45, selectedTotal)} من الرصيد الفعلي</span>
-						</article>
-						<article className="metric-card commission-metric">
-							<div className="metric-label">العمولة المفقودة للمندوب · 1٪</div>
-							<strong>{formatAmount(selectedOver45 * COMMISSION_RATE)}</strong>
-							<span className="metric-note">محسوبة على إجمالي الرصيد المتأخر فوق 45 يوماً</span>
-						</article>
-					</div>
-
 					<section className="panel collection-priority-panel" aria-labelledby="collection-priority-title">
 						<div className="panel-heading">
 							<div>
@@ -1356,140 +1334,7 @@ function App() {
 								<small>{previousSnapshot ? "مقارنة بالقطة السابقة" : "لا يوجد خط أساس بعد"}</small>
 							</div>
 						</div>
-						<div className="priority-table-scroll">
-							<table className="priority-table">
-								<thead>
-									<tr>
-										<th scope="col">#</th>
-										<th scope="col">الحساب / العميل</th>
-										<th scope="col">المندوب</th>
-										<th scope="col">الرصيد الفعلي</th>
-										<th scope="col">متأخر +30</th>
-										<th scope="col">متأخر +45</th>
-										<th scope="col">حصة +45 من المحفظة</th>
-										<th scope="col">التغير +45</th>
-										<th scope="col">إشارة متابعة</th>
-									</tr>
-								</thead>
-								<tbody>
-									{topPriorityAccounts.map((customer, index) => {
-										const ownerTotal = commissionBySegment.find(([segment]) => segment === customer.segment)?.[1].over45 ?? 0;
-										const signal = customer.previousOver45 === null
-											? "أولوية حالية"
-											: customer.previousOver45 === 0 && customer.over45 > 0
-												? "دخل شريحة +45"
-												: customer.changeOver45 !== null && customer.changeOver45 > 0
-													? "ارتفع رصيد +45"
-													: customer.changeOver45 !== null && customer.changeOver45 < 0
-														? "انخفض رصيد +45"
-														: "مستقر";
-										return (
-											<tr key={customer.account}>
-												<td>{index + 1}</td>
-												<td>
-													<strong className="account-name">{customer.name || "—"}</strong>
-													<span className="account-id">{customer.account}</span>
-												</td>
-												<td><span className="segment-tag">{customer.segment}</span></td>
-												<td className="numeric-cell">{formatAmount(customer.total)}</td>
-												<td className="numeric-cell">{formatAmount(customer.over30)}</td>
-												<td className="numeric-cell priority-over45">{formatAmount(customer.over45)}</td>
-												<td className="numeric-cell">{formatPercent(customer.over45, ownerTotal)}</td>
-												<td className={`numeric-cell${customer.changeOver45 !== null && customer.changeOver45 > 0 ? " priority-increase" : customer.changeOver45 !== null && customer.changeOver45 < 0 ? " priority-decrease" : ""}`}>
-													{customer.changeOver45 === null ? "—" : `${customer.changeOver45 > 0 ? "+" : ""}${formatAmount(customer.changeOver45)}`}
-												</td>
-												<td><span className={`priority-signal${signal.includes("دخل") || signal.includes("ارتفع") ? " warning" : signal.includes("انخفض") ? " easing" : ""}`}>{signal}</span></td>
-											</tr>
-										);
-									})}
-									{topPriorityAccounts.length === 0 && (
-										<tr><td className="priority-empty" colSpan={9}>لا توجد أرصدة متأخرة ضمن الأشخاص والسيجمينتات المحددة.</td></tr>
-									)}
-								</tbody>
-							</table>
-						</div>
-						<p className="priority-caveat">
-							ترتيب الأولوية يعتمد على حجم الرصيد المتأخر، وليس على توقع التحصيل. انخفاض +45 لا يثبت أن المبلغ تم تحصيله؛ قد يتأثر بمبيعات أو مرتجعات أو تسويات بين النسختين.
-						</p>
 					</section>
-
-					<div className="chart-grid">
-						<article className="panel age-panel">
-							<div className="panel-heading">
-								<div>
-									<p className="panel-kicker">مجموع الأرصدة حسب الفترات</p>
-									<h3>توزيع إجمالي الرصيد</h3>
-								</div>
-								<span className="panel-icon">▥</span>
-							</div>
-							<div className="age-chart">
-								{bucketTotals.map((bucket, index) => (
-									<div className="age-row" key={`${index}-${bucket.name}`}>
-										<div className="age-label" title={bucket.name}>
-											<span>{bucket.name}</span>
-											<strong>{formatAmount(bucket.amount)}</strong>
-										</div>
-										<div className="bar-track">
-											<div
-												className={`bar-fill age-fill segment-color-${index % 5}${index >= OVER_30_BUCKET_START && index < OVER_45_BUCKET_START ? ` aging-warning-${index}` : ""}`}
-												style={{ width: `${Math.max(0, (bucket.amount / Math.max(maxBucket, 1)) * 100)}%` }}
-											/>
-										</div>
-									</div>
-								))}
-							</div>
-							<div className="chart-footnote">
-								<span>مجموع الفترات</span>
-								<strong>{formatAmount(selectedTotal)}</strong>
-							</div>
-						</article>
-
-						<article className="panel segment-panel">
-							<div className="panel-heading">
-								<div>
-									<p className="panel-kicker">حسب ملف السيجمينت</p>
-									<h3>الرصيد حسب التصنيف</h3>
-								</div>
-								<span className="panel-period">{segments.length} سيجمينت</span>
-							</div>
-							<div className="segment-chart">
-								{segments.slice(0, 8).map(([segment, amount], index) => (
-									<div className="segment-row" key={segment}>
-										<div className="segment-label" title={segment}>
-											<span className={`segment-dot segment-color-${index % 5}`} />
-											<span>{segment}</span>
-											<strong>{formatAmount(amount)}</strong>
-										</div>
-										<div className="bar-track segment-track">
-											<div
-												className={`bar-fill segment-fill segment-color-${index % 5}`}
-												style={{ width: `${Math.max(0, (amount / Math.max(maxSegment, 1)) * 100)}%` }}
-											/>
-										</div>
-									</div>
-								))}
-								{otherSegments.length > 0 && (
-									<div className="segment-row">
-										<div className="segment-label">
-											<span className="segment-dot segment-color-other" />
-											<span>بقية السيجمينتات ({otherSegments.length})</span>
-											<strong>{formatAmount(otherSegmentTotal)}</strong>
-										</div>
-										<div className="bar-track segment-track">
-											<div
-												className="bar-fill segment-fill segment-color-other"
-												style={{ width: `${Math.max(0, (otherSegmentTotal / Math.max(maxSegment, 1)) * 100)}%` }}
-											/>
-										</div>
-									</div>
-								)}
-							</div>
-							<div className="chart-footnote">
-								<span>الأرصدة غير المصنفة</span>
-								<strong>{selectedRows.filter((customer) => customer.segment === "غير محدد").length} حساب</strong>
-							</div>
-						</article>
-					</div>
 
 					<div className="result-note">
 						<span aria-hidden="true">i</span>
