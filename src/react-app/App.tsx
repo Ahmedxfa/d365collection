@@ -48,6 +48,7 @@ const percentFormat = new Intl.NumberFormat("ar", {
 	maximumFractionDigits: 2,
 });
 const reportDateFormat = new Intl.DateTimeFormat("ar", { dateStyle: "medium", timeZone: "UTC" });
+const trendDateFormat = new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "2-digit", timeZone: "UTC" });
 type SortColumn = "total" | "bucket";
 type SortDirection = "asc" | "desc";
 interface TableSort {
@@ -133,6 +134,13 @@ function formatReportDate(reportDate: string | null | undefined): string {
 		return reportDateFormat.format(new Date(`${reportDate}T00:00:00Z`));
 	}
 	return "تاريخ الرصيد غير متوفر";
+}
+
+function formatTrendDate(reportDate: string | null | undefined): string {
+	if (reportDate && /^\d{4}-\d{2}-\d{2}$/.test(reportDate)) {
+		return trendDateFormat.format(new Date(`${reportDate}T00:00:00Z`));
+	}
+	return "—";
 }
 
 function archiveOptionLabel(archive: ArchiveSummary): string {
@@ -420,6 +428,14 @@ function App() {
 		const y = 170 - ((snapshot.total - trendMinimum) / (trendMaximum - trendMinimum)) * 145;
 		return { ...snapshot, x, y };
 	});
+	const trendHeadlineBalance = comparison
+		? totalBalance(rowsForRepresentativeView(
+			comparison.second.rows,
+			activeOwnerId,
+			selectedOwners,
+			showOtherSegments,
+		))
+		: activeRepresentativeTotal;
 	const trendPath = trendPoints.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
 	const topFiveForActive = activeRepresentativeRows
 		.map((customer) => ({
@@ -524,6 +540,13 @@ function App() {
 	);
 	const selectedOver30 = useMemo(
 		() => selectedRows.reduce((sum, customer) => sum + sumBucketsFrom(customer, OVER_30_BUCKET_START), 0),
+		[selectedRows],
+	);
+	const selected30To45 = useMemo(
+		() => selectedRows.reduce(
+			(sum, customer) => sum + amountBetweenBuckets(customer, OVER_30_BUCKET_START, OVER_45_BUCKET_START - 1),
+			0,
+		),
 		[selectedRows],
 	);
 	const selectedOver45 = useMemo(
@@ -997,7 +1020,9 @@ function App() {
 						<div className="rep-kpi-grid">
 							<article className="rep-kpi-card">
 								<span>إجمالي الرصيد</span>
-								<strong>{formatAmount(activeRepresentativeTotal)}</strong>
+								<strong title={comparison ? `رصيد فترة العرض ${formatReportDate(comparison.second.reportDate)}` : "الرصيد الحالي"}>
+									{formatAmount(trendHeadlineBalance)}
+								</strong>
 								<small className={`risk-change${activeChangeAmount === null || activeChangeAmount === 0 ? "" : activeChangeAmount > 0 ? " change-up" : " change-down"}`}>
 									{activeChangeAmount === null
 										? dashboardPreviousRows ? "لا توجد قيمة سابقة" : "لا توجد مقارنة بعد"
@@ -1005,12 +1030,12 @@ function App() {
 								</small>
 								<small className="rep-kpi-footnote">تغير الرصيد لا يثبت التحصيل وحده</small>
 							</article>
-							<article className="rep-kpi-card">
+							<article className="rep-kpi-card rep-kpi-under21">
 								<span>الرصيد حتى 21 يوماً</span>
 								<strong>{formatAmount(activeRepresentativeUnder21)}</strong>
 								<small>{formatPercent(activeRepresentativeUnder21, activeRepresentativeTotal)} من المحفظة · Current وحتى فترة أقل من 21</small>
 							</article>
-							<article className="rep-kpi-card">
+							<article className="rep-kpi-card rep-kpi-under45">
 								<span>الرصيد حتى 45 يوماً</span>
 								<strong>{formatAmount(activeRepresentativeUnder45)}</strong>
 								<small>{formatPercent(activeRepresentativeUnder45, activeRepresentativeTotal)} من المحفظة · الفترات حتى أقل من 45</small>
@@ -1043,7 +1068,9 @@ function App() {
 										<h3>اتجاه إجمالي الرصيد</h3>
 										<p>{comparison ? "الفترة المحددة مقارنة بفترة الأساس" : `حسب آخر ${activeTrend.length} لقطات محفوظة`} · لا يمثل التحصيل وحده</p>
 									</div>
-									<strong>{formatAmount(activeRepresentativeTotal)}</strong>
+									<strong title={comparison ? `رصيد فترة العرض ${formatReportDate(comparison.second.reportDate)}` : "الرصيد الحالي"}>
+										{formatAmount(trendHeadlineBalance)}
+									</strong>
 								</div>
 								{activeTrend.length > 0 ? (
 									<>
@@ -1068,9 +1095,16 @@ function App() {
 											))}
 										</svg>
 										<div className="rep-chart-labels">
-											<span>{activeTrend[0] ? formatReportDate(activeTrend[0].reportDate) : ""}</span>
-											<span>{activeTrend.length > 1 ? `${activeTrend.length} لقطات` : "لقطة واحدة"}</span>
-											<span>{activeTrend.length > 1 ? formatReportDate(activeTrend[activeTrend.length - 1].reportDate) : ""}</span>
+											{trendPoints.map((point, index) => (
+												<span
+													key={point.id}
+													style={{ left: `${(point.x / 780) * 100}%` }}
+													className={index === 0 ? "first" : index === trendPoints.length - 1 ? "last" : ""}
+													title={formatReportDate(point.reportDate)}
+												>
+													{formatTrendDate(point.reportDate)}
+												</span>
+											))}
 										</div>
 									</>
 								) : <p className="rep-chart-empty">لا توجد بيانات تاريخية لهذا المندوب.</p>}
@@ -1334,6 +1368,11 @@ function App() {
 							<div className="metric-label">المتأخرات فوق 30 يوم</div>
 							<strong>{formatAmount(selectedOver30)}</strong>
 							<span className="metric-note">{formatPercent(selectedOver30, selectedTotal)} من الرصيد الفعلي</span>
+						</article>
+						<article className="metric-card aging-30-45-metric">
+							<div className="metric-label">الرصيد بين 30–45 يوم</div>
+							<strong>{formatAmount(selected30To45)}</strong>
+							<span className="metric-note">{formatPercent(selected30To45, selectedTotal)} من الرصيد الفعلي · هذه الشريحة فقط</span>
 						</article>
 						<article className="metric-card overdue-metric">
 							<div className="metric-label">المتأخرات فوق 45 يوم</div>

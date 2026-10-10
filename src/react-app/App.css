@@ -374,6 +374,24 @@
 	font-size: 7px;
 }
 
+.rep-kpi-under21 {
+	border-color: #cae9dd;
+	background: #f4fbf8;
+}
+
+.rep-kpi-under21 > strong {
+	color: #27846a;
+}
+
+.rep-kpi-under45 {
+	border-color: #d7e8d2;
+	background: #f7fbf3;
+}
+
+.rep-kpi-under45 > strong {
+	color: #698b42;
+}
+
 .rep-kpi-risk {
 	border-color: #efd4cf;
 	background: #fff8f6;
@@ -595,12 +613,30 @@
 }
 
 .rep-chart-labels {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 8px;
+	position: relative;
+	height: 12px;
+	margin-top: 3px;
 	color: #9aa39d;
 	font-size: 7px;
+	font-variant-numeric: tabular-nums;
+	text-align: center;
+	direction: ltr;
+}
+
+.rep-chart-labels > span {
+	position: absolute;
+	top: 0;
+	transform: translateX(-50%);
+	overflow: hidden;
+	white-space: nowrap;
+}
+
+.rep-chart-labels > span.first {
+	transform: translateX(0);
+}
+
+.rep-chart-labels > span.last {
+	transform: translateX(-100%);
 }
 
 .rep-aging-chart {
@@ -1402,6 +1438,15 @@
 .metric-card.overdue-metric {
 	background: #fffdf7;
 	border-color: #f0e8cf;
+}
+
+.metric-card.aging-30-45-metric {
+	background: #fff9df;
+	border-color: #e6c84f;
+}
+
+.aging-30-45-metric > strong {
+	color: #947315;
 }
 
 .metric-card.commission-metric {
