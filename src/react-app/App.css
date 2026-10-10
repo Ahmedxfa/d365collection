@@ -1503,8 +1503,11 @@
 	margin-top: 15px;
 }
 
-.chart-grid.rep-segment-distribution {
-	grid-template-columns: minmax(0, 1fr);
+.rep-side-stack {
+	min-width: 0;
+	display: grid;
+	align-content: start;
+	gap: 9px;
 }
 
 .panel {

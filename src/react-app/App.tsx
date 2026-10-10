@@ -958,28 +958,6 @@ function App() {
 							</article>
 						</div>
 						<div className="rep-bottom-grid">
-							<article className="rep-chart-card concentration-card">
-								<div className="rep-chart-heading">
-									<div>
-										<h3>تركيز متأخرات +45</h3>
-										<p>أكبر الحسابات المتأخرة من رصيد المندوب</p>
-									</div>
-									<strong>{formatPercent(topFiveOver45, activeOver45Total)}</strong>
-								</div>
-								{topFiveForActive.length > 0 ? topFiveForActive.map((customer, index) => (
-									<div className="concentration-row" key={customer.account}>
-										<div>
-											<span className="concentration-rank">{index + 1}</span>
-											<span className="concentration-name">{customer.name || customer.account}</span>
-											<strong>{formatAmount(customer.over45)}</strong>
-										</div>
-										<div className="bar-track">
-											<div className="bar-fill priority-concentration-fill" style={{ width: `${Math.max(0, (customer.over45 / Math.max(activeOver45Total, 1)) * 100)}%` }} />
-										</div>
-									</div>
-								)) : <p className="rep-chart-empty">لا توجد متأخرات +45 لدى هذا المندوب.</p>}
-								<p className="rep-chart-footnote">أعلى 5 حسابات تشكل {formatPercent(topFiveOver45, activeOver45Total)} من إجمالي +45.</p>
-							</article>
 							<article className="rep-chart-card panel age-panel">
 								<div className="panel-heading">
 									<div>
@@ -1009,9 +987,30 @@ function App() {
 									<strong>{formatAmount(activeRepresentativeTotal)}</strong>
 								</div>
 							</article>
-						</div>
-						<div className="chart-grid rep-segment-distribution">
-							<article className="panel segment-panel">
+							<div className="rep-side-stack">
+								<article className="rep-chart-card concentration-card">
+								<div className="rep-chart-heading">
+									<div>
+										<h3>تركيز متأخرات +45</h3>
+										<p>أكبر الحسابات المتأخرة من رصيد المندوب</p>
+									</div>
+									<strong>{formatPercent(topFiveOver45, activeOver45Total)}</strong>
+								</div>
+								{topFiveForActive.length > 0 ? topFiveForActive.map((customer, index) => (
+									<div className="concentration-row" key={customer.account}>
+										<div>
+											<span className="concentration-rank">{index + 1}</span>
+											<span className="concentration-name">{customer.name || customer.account}</span>
+											<strong>{formatAmount(customer.over45)}</strong>
+										</div>
+										<div className="bar-track">
+											<div className="bar-fill priority-concentration-fill" style={{ width: `${Math.max(0, (customer.over45 / Math.max(activeOver45Total, 1)) * 100)}%` }} />
+										</div>
+									</div>
+								)) : <p className="rep-chart-empty">لا توجد متأخرات +45 لدى هذا المندوب.</p>}
+								<p className="rep-chart-footnote">أعلى 5 حسابات تشكل {formatPercent(topFiveOver45, activeOver45Total)} من إجمالي +45.</p>
+								</article>
+								<article className="rep-chart-card panel segment-panel">
 								<div className="panel-heading">
 									<div>
 										<p className="panel-kicker">حسب المندوب</p>
@@ -1055,7 +1054,8 @@ function App() {
 									<span>مندوبون غير محددين</span>
 									<strong>{activeRepresentativeRows.filter((customer) => customer.segment === "غير محدد").length} حساب</strong>
 								</div>
-							</article>
+								</article>
+							</div>
 						</div>
 						<article className="rep-chart-card rep-heatmap-card">
 							<div className="rep-chart-heading">
