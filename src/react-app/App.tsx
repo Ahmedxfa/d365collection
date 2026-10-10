@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { createExcelFile } from "./excel-export";
 import { processFiles, type ProcessingResult } from "./processor";
 import { loadSavedDashboard, saveDashboard } from "./dashboard-storage";
@@ -28,9 +28,6 @@ const OWNER_FILTERS = [
 	{ id: "mohammed-saad", name: "محمد سعد", startsWith: ["محمد سعد"], contains: [] },
 ] as const;
 
-const PAGE_SIZE = 20;
-const MIN_COLUMN_WIDTH = 80;
-const INITIAL_COLUMN_WIDTHS = [260, 145, 150, ...Array(9).fill(125), 145];
 const OVER_30_BUCKET_START = 5;
 const OVER_45_BUCKET_START = 7;
 const AGING_CHART_COLORS = ["#3d9272", "#59a78c", "#78b89f", "#96c8b2", "#b1d4c3", "#e6c84f", "#efb83f", "#cc7654", "#a94f4f"];
@@ -49,10 +46,9 @@ const percentFormat = new Intl.NumberFormat("ar", {
 });
 const reportDateFormat = new Intl.DateTimeFormat("ar", { dateStyle: "medium", timeZone: "UTC" });
 const trendDateFormat = new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "2-digit", timeZone: "UTC" });
-type SortColumn = "total" | "bucket";
 type SortDirection = "asc" | "desc";
-interface TableSort {
-	column: SortColumn;
+interface HeatmapSort {
+	column: "customer" | "segment" | "total" | "bucket";
 	bucketIndex?: number;
 	direction: SortDirection;
 }
@@ -240,17 +236,12 @@ function App() {
 	const [isRestoring, setIsRestoring] = useState(true);
 	const [isProcessing, setIsProcessing] = useState(false);
 	const [error, setError] = useState("");
-	const [search, setSearch] = useState("");
-	const [segmentFilter, setSegmentFilter] = useState("all");
 	const [activeOwnerId, setActiveOwnerId] = useState<string>("all");
 	const [selectedOwners, setSelectedOwners] = useState<Set<string>>(
 		() => new Set(OWNER_FILTERS.map((owner) => owner.id)),
 	);
 	const [showOtherSegments, setShowOtherSegments] = useState(false);
-	const [page, setPage] = useState(1);
-	const [sort, setSort] = useState<TableSort>({ column: "total", direction: "desc" });
-	const [columnWidths, setColumnWidths] = useState(INITIAL_COLUMN_WIDTHS);
-	const resizeStart = useRef<{ columnIndex: number; pointerX: number; width: number } | null>(null);
+	const [heatmapSort, setHeatmapSort] = useState<HeatmapSort>({ column: "total", direction: "desc" });
 	const runId = useRef(0);
 
 	useEffect(() => {
@@ -483,7 +474,25 @@ function App() {
 		1,
 		...activeRepresentativeRows.flatMap((customer) => customer.buckets.map((amount) => Math.abs(amount))),
 	);
-	const activeHeatmapRows = [...activeRepresentativeRows].sort((first, second) => second.total - first.total);
+	const activeHeatmapRows = [...activeRepresentativeRows].sort((first, second) => {
+		let difference: number;
+		switch (heatmapSort.column) {
+			case "customer":
+				difference = (first.name || first.account).localeCompare(second.name || second.account, "ar");
+				break;
+			case "segment":
+				difference = first.segment.localeCompare(second.segment, "ar");
+				break;
+			case "bucket":
+				difference = (first.buckets[heatmapSort.bucketIndex ?? 0] ?? 0) -
+					(second.buckets[heatmapSort.bucketIndex ?? 0] ?? 0);
+				break;
+			case "total":
+				difference = first.total - second.total;
+				break;
+		}
+		return heatmapSort.direction === "desc" ? -difference : difference;
+	});
 
 	const segments = useMemo(() => {
 		if (!result) return [];
@@ -504,31 +513,6 @@ function App() {
 			amount: selectedRows.reduce((sum, customer) => sum + customer.buckets[index], 0),
 		}));
 	}, [result, selectedRows]);
-
-	const visibleRows = useMemo(() => {
-		if (!result) return [];
-		const query = search.trim().toLocaleLowerCase();
-		const filtered = selectedRows.filter((customer) => {
-			const matchesSegment = segmentFilter === "all" || customer.segment === segmentFilter;
-			const matchesSearch =
-				query === "" ||
-				[customer.account, customer.name, customer.customerGroup, customer.segment]
-					.join(" ")
-					.toLocaleLowerCase()
-					.includes(query);
-			return matchesSegment && matchesSearch;
-		});
-		return [...filtered].sort((first, second) => {
-			const firstValue = sort.column === "total"
-				? first.total
-				: first.buckets[sort.bucketIndex ?? 0] ?? 0;
-			const secondValue = sort.column === "total"
-				? second.total
-				: second.buckets[sort.bucketIndex ?? 0] ?? 0;
-			const comparison = firstValue - secondValue;
-			return sort.direction === "desc" ? -comparison : comparison;
-		});
-	}, [result, search, segmentFilter, selectedRows, sort]);
 
 	const selectedTotal = useMemo(
 		() => selectedRows.reduce((sum, customer) => sum + customer.total, 0),
@@ -589,9 +573,6 @@ function App() {
 
 	function selectRepresentative(ownerId: string): void {
 		setActiveOwnerId(ownerId);
-		setSearch("");
-		setSegmentFilter("all");
-		setPage(1);
 		if (ownerId === "all") {
 			setSelectedOwners(new Set(OWNER_FILTERS.map((owner) => owner.id)));
 			setShowOtherSegments(false);
@@ -614,8 +595,6 @@ function App() {
 		return [...totals.entries()].sort((first, second) => second[1].over45 - first[1].over45);
 	}, [selectedRows]);
 
-	const pageCount = Math.max(1, Math.ceil(visibleRows.length / PAGE_SIZE));
-	const pageRows = visibleRows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 	const maxBucket = Math.max(0, ...bucketTotals.map((bucket) => bucket.amount));
 	const maxSegment = Math.max(0, ...segments.slice(0, 8).map(([, amount]) => amount));
 	const otherSegments = segments.slice(8);
@@ -630,11 +609,8 @@ function App() {
 		const nextUploads = { ...uploads, [key]: file };
 		setUploads(nextUploads);
 		setError("");
-		setSearch("");
-		setSegmentFilter("all");
 		setSelectedOwners(new Set(OWNER_FILTERS.map((owner) => owner.id)));
 		setShowOtherSegments(false);
-		setPage(1);
 		const currentRun = ++runId.current;
 
 		if (!nextUploads.periodOne || !nextUploads.periodTwo || !nextUploads.segments) {
@@ -791,8 +767,8 @@ function App() {
 		}
 	}
 
-	function toggleSort(column: SortColumn, bucketIndex?: number): void {
-		setSort((current) => {
+	function toggleHeatmapSort(column: HeatmapSort["column"], bucketIndex?: number): void {
+		setHeatmapSort((current) => {
 			const sameColumn = current.column === column && current.bucketIndex === bucketIndex;
 			return {
 				column,
@@ -800,60 +776,12 @@ function App() {
 				direction: sameColumn && current.direction === "desc" ? "asc" : "desc",
 			};
 		});
-		setPage(1);
 	}
 
-	function resizeColumn(columnIndex: number, event: ReactPointerEvent<HTMLButtonElement>): void {
-		if (event.type === "pointerdown") {
-			event.preventDefault();
-			event.currentTarget.setPointerCapture(event.pointerId);
-			resizeStart.current = {
-				columnIndex,
-				pointerX: event.clientX,
-				width: columnWidths[columnIndex] ?? INITIAL_COLUMN_WIDTHS[columnIndex] ?? 125,
-			};
-			return;
-		}
-		const start = resizeStart.current;
-		if (event.type === "pointerup" || event.type === "pointercancel") {
-			resizeStart.current = null;
-			return;
-		}
-		if (event.type === "pointermove" && start?.columnIndex === columnIndex) {
-			const nextWidth = Math.max(
-				MIN_COLUMN_WIDTH,
-				start.width + start.pointerX - event.clientX,
-			);
-			setColumnWidths((current) =>
-				current.map((width, index) => index === columnIndex ? nextWidth : width),
-			);
-		}
-	}
-
-	function handleResizeKey(columnIndex: number, event: KeyboardEvent<HTMLButtonElement>): void {
-		if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-		event.preventDefault();
-		const delta = event.key === "ArrowLeft" ? 10 : -10;
-		setColumnWidths((current) =>
-			current.map((width, index) =>
-				index === columnIndex ? Math.max(MIN_COLUMN_WIDTH, width + delta) : width,
-			),
-		);
-	}
-
-	function renderResizeHandle(columnIndex: number, label: string) {
-		return (
-			<button
-				type="button"
-				className="column-resizer"
-				aria-label={`تغيير عرض عمود ${label}`}
-				onPointerDown={(event) => resizeColumn(columnIndex, event)}
-				onPointerMove={(event) => resizeColumn(columnIndex, event)}
-				onPointerUp={(event) => resizeColumn(columnIndex, event)}
-				onPointerCancel={(event) => resizeColumn(columnIndex, event)}
-				onKeyDown={(event) => handleResizeKey(columnIndex, event)}
-			/>
-		);
+	function heatmapSortIndicator(column: HeatmapSort["column"], bucketIndex?: number): string {
+		return heatmapSort.column === column && heatmapSort.bucketIndex === bucketIndex
+			? heatmapSort.direction === "desc" ? " ↓" : " ↑"
+			: "";
 	}
 
 	return (
@@ -998,9 +926,6 @@ function App() {
 							setActiveOwnerId("all");
 							setSelectedOwners(new Set(OWNER_FILTERS.map((owner) => owner.id)));
 							setShowOtherSegments((visible) => !visible);
-							setSearch("");
-							setSegmentFilter("all");
-							setPage(1);
 						}}
 					>
 						<span>باقي الفروع</span>
@@ -1179,19 +1104,39 @@ function App() {
 							<div className="rep-chart-heading">
 								<div>
 									<h3>خريطة أعمار العملاء · {activeRepresentativeName}</h3>
-									<p>العملاء مرتّبون حسب إجمالي الرصيد · الأخضر حتى 45 يوماً والأحمر فوق 45</p>
+									<p>اضغط على عناوين الأعمدة للفرز · الأخضر حتى 45 يوماً والأحمر فوق 45</p>
 								</div>
 							</div>
 							<div className="rep-heatmap-scroll">
 								<table className="rep-heatmap">
 									<thead>
 										<tr>
-											<th scope="col">العميل / الحساب</th>
-											<th scope="col">السيجمينت</th>
+											<th scope="col" aria-sort={heatmapSort.column === "customer" ? (heatmapSort.direction === "desc" ? "descending" : "ascending") : "none"}>
+												<button className="sort-button" type="button" onClick={() => toggleHeatmapSort("customer")}>
+													العميل / الحساب{heatmapSortIndicator("customer")}
+												</button>
+											</th>
+											<th scope="col" aria-sort={heatmapSort.column === "segment" ? (heatmapSort.direction === "desc" ? "descending" : "ascending") : "none"}>
+												<button className="sort-button" type="button" onClick={() => toggleHeatmapSort("segment")}>
+													السيجمينت{heatmapSortIndicator("segment")}
+												</button>
+											</th>
 											{dashboardResult?.bucketNames.map((bucket, index) => (
-												<th scope="col" key={`${index}-${bucket}`}>{bucket}</th>
+												<th
+													scope="col"
+													key={`${index}-${bucket}`}
+													aria-sort={heatmapSort.column === "bucket" && heatmapSort.bucketIndex === index ? (heatmapSort.direction === "desc" ? "descending" : "ascending") : "none"}
+												>
+													<button className="sort-button" type="button" onClick={() => toggleHeatmapSort("bucket", index)}>
+														{bucket}{heatmapSortIndicator("bucket", index)}
+													</button>
+												</th>
 											))}
-											<th scope="col">الإجمالي</th>
+											<th scope="col" aria-sort={heatmapSort.column === "total" ? (heatmapSort.direction === "desc" ? "descending" : "ascending") : "none"}>
+												<button className="sort-button" type="button" onClick={() => toggleHeatmapSort("total")}>
+													الإجمالي{heatmapSortIndicator("total")}
+												</button>
+											</th>
 										</tr>
 									</thead>
 									<tbody>
@@ -1546,179 +1491,9 @@ function App() {
 						</article>
 					</div>
 
-					<section className="panel commission-panel" aria-labelledby="commission-title">
-						<div className="panel-heading">
-							<div>
-								<p className="panel-kicker">الرصيد المتأخر × نسبة العمولة</p>
-								<h3 id="commission-title">العمولة المفقودة حسب المندوب</h3>
-							</div>
-							<span className="panel-period">1٪ من رصيد +45 يوم</span>
-						</div>
-						<div className="commission-table-scroll">
-							<table className="commission-table">
-								<thead>
-									<tr>
-										<th scope="col">المندوب / السيجمينت</th>
-										<th scope="col">الحسابات</th>
-										<th scope="col">الرصيد الفعلي</th>
-										<th scope="col">فوق 30 يوم</th>
-										<th scope="col">النسبة</th>
-										<th scope="col">فوق 45 يوم</th>
-										<th scope="col">النسبة</th>
-										<th scope="col">العمولة المفقودة</th>
-									</tr>
-								</thead>
-								<tbody>
-									{commissionBySegment.map(([segment, totals]) => (
-										<tr key={segment}>
-											<td><span className="segment-tag">{segment}</span></td>
-											<td className="numeric-cell">{totals.count}</td>
-											<td className="numeric-cell">{formatAmount(totals.total)}</td>
-											<td className="numeric-cell">{formatAmount(totals.over30)}</td>
-											<td className="numeric-cell">{formatPercent(totals.over30, totals.total)}</td>
-											<td className="numeric-cell">{formatAmount(totals.over45)}</td>
-											<td className="numeric-cell">{formatPercent(totals.over45, totals.total)}</td>
-											<td className="numeric-cell commission-value">{formatAmount(totals.over45 * COMMISSION_RATE)}</td>
-										</tr>
-									))}
-									{commissionBySegment.length === 0 && (
-										<tr><td colSpan={8} className="commission-empty">لا توجد حسابات ضمن الأشخاص والسيجمينتات المحددة.</td></tr>
-									)}
-								</tbody>
-								{commissionBySegment.length > 0 && (
-									<tfoot>
-										<tr>
-											<th scope="row">الإجمالي</th>
-											<td className="numeric-cell">{selectedRows.length}</td>
-											<td className="numeric-cell">{formatAmount(selectedTotal)}</td>
-											<td className="numeric-cell">{formatAmount(selectedOver30)}</td>
-											<td className="numeric-cell">{formatPercent(selectedOver30, selectedTotal)}</td>
-											<td className="numeric-cell">{formatAmount(selectedOver45)}</td>
-											<td className="numeric-cell">{formatPercent(selectedOver45, selectedTotal)}</td>
-											<td className="numeric-cell commission-value">{formatAmount(selectedOver45 * COMMISSION_RATE)}</td>
-										</tr>
-									</tfoot>
-								)}
-							</table>
-						</div>
-					</section>
-
-					<section className="panel accounts-panel" aria-labelledby="accounts-title">
-						<div className="accounts-heading">
-							<div>
-								<p className="panel-kicker">كل الحسابات والفترات</p>
-								<h3 id="accounts-title">تفاصيل الرصيد الموحّد</h3>
-							</div>
-							<div className="table-controls">
-								<label className="search-box">
-									<span aria-hidden="true">⌕</span>
-									<input
-										type="search"
-										value={search}
-										onChange={(event) => {
-											setSearch(event.target.value);
-											setPage(1);
-										}}
-										placeholder="ابحث عن حساب أو اسم..."
-										aria-label="ابحث عن حساب أو اسم"
-									/>
-								</label>
-								<select
-									value={segmentFilter}
-									onChange={(event) => {
-										setSegmentFilter(event.target.value);
-										setPage(1);
-									}}
-									aria-label="تصفية حسب السيجمينت"
-								>
-									<option value="all">كل السيجمينتات</option>
-									{segments.map(([segment]) => <option key={segment} value={segment}>{segment}</option>)}
-								</select>
-							</div>
-						</div>
-						<div className="table-summary">
-							عرض <strong>{visibleRows.length === 0 ? 0 : (page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, visibleRows.length)}</strong> من <strong>{visibleRows.length}</strong> نتيجة
-							<span> · </span>
-							{selectedRows.length} حساب محدد · إجمالي {formatAmount(selectedTotal)}
-						</div>
-						<div className="table-scroll">
-							<table
-								className="accounts-table"
-								style={{ width: `${columnWidths.reduce((sum, width) => sum + width, 0)}px` }}
-							>
-								<colgroup>
-									{columnWidths.map((width, index) => <col key={index} style={{ width: `${width}px` }} />)}
-								</colgroup>
-								<thead>
-									<tr>
-										<th scope="col">الحساب / العميل{renderResizeHandle(0, "الحساب")}</th>
-										<th scope="col" aria-sort={sort.column === "total" ? (sort.direction === "desc" ? "descending" : "ascending") : "none"}>
-											<button className="sort-button" type="button" onClick={() => toggleSort("total")}>
-												الرصيد الفعلي{sort.column === "total" ? (sort.direction === "desc" ? " ↓" : " ↑") : ""}
-											</button>
-											{renderResizeHandle(1, "الرصيد الفعلي")}
-										</th>
-										<th scope="col">السيجمينت{renderResizeHandle(2, "السيجمينت")}</th>
-										{result.bucketNames.map((name, index) => (
-											<th
-												scope="col"
-												key={`${index}-${name}`}
-												aria-sort={sort.column === "bucket" && sort.bucketIndex === index ? (sort.direction === "desc" ? "descending" : "ascending") : "none"}
-											>
-												<button className="sort-button" type="button" onClick={() => toggleSort("bucket", index)}>
-													{name}{sort.column === "bucket" && sort.bucketIndex === index ? (sort.direction === "desc" ? " ↓" : " ↑") : ""}
-												</button>
-												{renderResizeHandle(index + 3, name)}
-											</th>
-										))}
-										<th scope="col">عمولة 1٪{renderResizeHandle(result.bucketNames.length + 3, "العمولة")}</th>
-									</tr>
-								</thead>
-								<tbody>
-									{pageRows.map((customer) => (
-										<tr key={customer.account}>
-											<td>
-												<strong className="account-name">{customer.name || "—"}</strong>
-												<span className="account-id">{customer.account}</span>
-											</td>
-											<td className="numeric-cell total-cell">{formatAmount(customer.total)}</td>
-											<td><span className="segment-tag">{customer.segment}</span></td>
-											{customer.buckets.map((amount, index) => (
-												<td className="numeric-cell" key={`${customer.account}-${index}`}>{formatAmount(amount)}</td>
-											))}
-											<td className="numeric-cell commission-value">
-												{formatAmount(sumBucketsFrom(customer, OVER_45_BUCKET_START) * COMMISSION_RATE)}
-											</td>
-										</tr>
-									))}
-								</tbody>
-							</table>
-							{visibleRows.length === 0 && <div className="empty-table">لا توجد نتائج تطابق البحث.</div>}
-						</div>
-						{visibleRows.length > PAGE_SIZE && (
-							<div className="table-pagination">
-								<button
-									type="button"
-									disabled={page <= 1}
-									onClick={() => setPage((currentPage) => Math.max(1, currentPage - 1))}
-								>
-									السابق
-								</button>
-								<span>صفحة {page} من {pageCount}</span>
-								<button
-									type="button"
-									disabled={page >= pageCount}
-									onClick={() => setPage((currentPage) => Math.min(pageCount, currentPage + 1))}
-								>
-									التالي
-								</button>
-							</div>
-						)}
-					</section>
-
 					<div className="result-note">
 						<span aria-hidden="true">i</span>
-						نعرض فقط الأشخاص والسيجمينتات المحددة؛ أزل علامة الصح لإخفاء حساباتهم من الجدول والملخص والرسوم وملف Excel.
+						نعرض فقط الأشخاص والسيجمينتات المحددة؛ أزل علامة الصح لإخفاء حساباتهم من الملخص والرسوم وملف Excel.
 						{result.segmentMatches < result.rows.length && (
 							<span> لم نجد سيجمينتاً لـ {result.rows.length - result.segmentMatches} حساب؛ تظهر كـ «غير محدد» ضمن بقية السيجمينتات.</span>
 						)}
