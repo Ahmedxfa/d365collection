@@ -12,6 +12,7 @@ export interface PeriodCustomer {
 export interface PeriodData {
 	bucketNames: string[];
 	customers: Map<string, PeriodCustomer>;
+	reportDate: string;
 }
 
 export interface MergedCustomer {
@@ -28,6 +29,7 @@ export interface ProcessingResult {
 	rows: MergedCustomer[];
 	total: number;
 	segmentMatches: number;
+	reportDate: string;
 }
 
 function normalize(value: string): string {
@@ -55,6 +57,26 @@ function parseAmount(value: string | undefined, fileName: string, rowNumber: num
 	return amount;
 }
 
+function parseReportDate(value: string | undefined, fileName: string): string {
+	const match = value?.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+	if (!match) {
+		throw new Error(`تعذر تحديد تاريخ الرصيد من حقل Balance as of في ${fileName}.`);
+	}
+	const [, dayText, monthText, yearText] = match;
+	const day = Number(dayText);
+	const month = Number(monthText);
+	const year = Number(yearText);
+	const date = new Date(Date.UTC(year, month - 1, day));
+	if (
+		date.getUTCFullYear() !== year ||
+		date.getUTCMonth() !== month - 1 ||
+		date.getUTCDate() !== day
+	) {
+		throw new Error(`تاريخ الرصيد غير صالح في ${fileName}.`);
+	}
+	return `${yearText}-${monthText.padStart(2, "0")}-${dayText.padStart(2, "0")}`;
+}
+
 async function readPeriod(file: File, verifyReportTotal: boolean): Promise<PeriodData> {
 	const parsed = Papa.parse<string[]>(await file.text(), {
 		skipEmptyLines: "greedy",
@@ -77,6 +99,11 @@ async function readPeriod(file: File, verifyReportTotal: boolean): Promise<Perio
 	if (accountIndex < 0 || accountIndex + 9 >= markerRow.length) {
 		throw new Error(`تنسيق ملف الفترة ${file.name} غير متوقع؛ تعذر تحديد أعمدة الحسابات والأرصدة.`);
 	}
+	const balanceDateLabelIndex = markerRow.findIndex((cell) => normalize(cell) === "balance as of");
+	if (balanceDateLabelIndex < 0) {
+		throw new Error(`لم أجد حقل Balance as of في ملف الفترة ${file.name}.`);
+	}
+	const reportDate = parseReportDate(markerRow[balanceDateLabelIndex + 1], file.name);
 
 	const bucketNames = markerRow
 		.slice(0, 6)
@@ -118,7 +145,7 @@ async function readPeriod(file: File, verifyReportTotal: boolean): Promise<Perio
 		}
 	}
 
-	return { bucketNames, customers };
+	return { bucketNames, customers, reportDate };
 }
 
 const SPREADSHEET_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
@@ -270,6 +297,11 @@ export async function processFiles(
 		readPeriod(periodTwoFile, true),
 		readSegments(segmentFile),
 	]);
+	if (periodOne.reportDate !== periodTwo.reportDate) {
+		throw new Error(
+			`تاريخ الرصيد مختلف بين الملفين: ${periodOne.reportDate} في الملف الأول و${periodTwo.reportDate} في الملف الثاني. يجب أن يكونا لنفس التاريخ لدمج الفترات.`,
+		);
+	}
 
 	const periodOneOnly = [...periodOne.customers.keys()].filter((key) => !periodTwo.customers.has(key));
 	const periodTwoOnly = [...periodTwo.customers.keys()].filter((key) => !periodOne.customers.has(key));
@@ -307,5 +339,6 @@ export async function processFiles(
 		rows,
 		total,
 		segmentMatches: rows.filter((row) => Boolean(segments.get(accountKey(row.account)))).length,
+		reportDate: periodOne.reportDate,
 	};
 }

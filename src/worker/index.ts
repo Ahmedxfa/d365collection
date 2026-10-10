@@ -18,11 +18,13 @@ interface ArchivePayload {
 	rows: CustomerRow[];
 	total: number;
 	segmentMatches: number;
+	reportDate: string;
 }
 
 interface ArchiveSummary {
 	id: string;
 	createdAt: string;
+	reportDate: string | null;
 	total: number;
 	rowCount: number;
 	segmentMatches: number;
@@ -32,6 +34,7 @@ interface ArchiveSummary {
 interface ArchiveRecord {
 	id: string;
 	created_at: string;
+	balance_date: string | null;
 	total: number;
 	row_count: number;
 	segment_matches: number;
@@ -57,6 +60,15 @@ function finiteNumber(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value);
 }
 
+function validReportDate(value: unknown): value is string {
+	if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+	const [year, month, day] = value.split("-").map(Number);
+	const date = new Date(Date.UTC(year, month - 1, day));
+	return date.getUTCFullYear() === year &&
+		date.getUTCMonth() === month - 1 &&
+		date.getUTCDate() === day;
+}
+
 function validatePayload(value: unknown): ArchivePayload | null {
 	if (!value || typeof value !== "object") return null;
 	const payload = value as Partial<ArchivePayload>;
@@ -69,6 +81,7 @@ function validatePayload(value: unknown): ArchivePayload | null {
 		payload.rows.length === 0 ||
 		payload.rows.length > MAX_ROWS ||
 		!finiteNumber(payload.total) ||
+		!validReportDate(payload.reportDate) ||
 		typeof payload.segmentMatches !== "number" ||
 		!Number.isInteger(payload.segmentMatches) ||
 		payload.segmentMatches < 0 ||
@@ -101,6 +114,7 @@ function toSummary(record: ArchiveRecord): ArchiveSummary {
 	return {
 		id: record.id,
 		createdAt: record.created_at,
+		reportDate: record.balance_date,
 		total: record.total,
 		rowCount: record.row_count,
 		segmentMatches: record.segment_matches,
@@ -115,7 +129,7 @@ function isValidArchiveId(id: string): boolean {
 app.get("/api/archives", async (context) => {
 	try {
 		const { results } = await context.env.DB.prepare(
-			"SELECT id, created_at, total, row_count, segment_matches, bucket_names_json FROM archives ORDER BY created_at DESC",
+			"SELECT id, created_at, balance_date, total, row_count, segment_matches, bucket_names_json FROM archives ORDER BY balance_date DESC, created_at DESC",
 		).all<ArchiveRecord>();
 		return context.json({ archives: results.map(toSummary) });
 	} catch (error) {
@@ -129,7 +143,7 @@ app.get("/api/archives/:id", async (context) => {
 	if (!isValidArchiveId(id)) return jsonError("معرّف النسخة غير صالح.", 400);
 	try {
 		const record = await context.env.DB.prepare(
-			"SELECT id, created_at, total, row_count, segment_matches, bucket_names_json FROM archives WHERE id = ?",
+			"SELECT id, created_at, balance_date, total, row_count, segment_matches, bucket_names_json FROM archives WHERE id = ?",
 		).bind(id).first<ArchiveRecord>();
 		if (!record) return jsonError("لم يتم العثور على النسخة المطلوبة.", 404);
 		const { results } = await context.env.DB.prepare(
@@ -182,8 +196,8 @@ app.post("/api/archives", async (context) => {
 
 	try {
 		await context.env.DB.prepare(
-			"INSERT INTO archives (id, created_at, total, row_count, segment_matches, bucket_names_json) VALUES (?, ?, ?, ?, ?, ?)",
-		).bind(id, createdAt, total, payload.rows.length, payload.segmentMatches, JSON.stringify(payload.bucketNames)).run();
+			"INSERT INTO archives (id, created_at, balance_date, total, row_count, segment_matches, bucket_names_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		).bind(id, createdAt, payload.reportDate, total, payload.rows.length, payload.segmentMatches, JSON.stringify(payload.bucketNames)).run();
 		for (let start = 0; start < payload.rows.length; start += ROW_BATCH_SIZE) {
 			const statements = payload.rows.slice(start, start + ROW_BATCH_SIZE).map((row) =>
 				context.env.DB.prepare(
@@ -193,7 +207,7 @@ app.post("/api/archives", async (context) => {
 			await context.env.DB.batch(statements);
 		}
 		return context.json({
-			archive: { id, createdAt, total, rowCount: payload.rows.length, segmentMatches: payload.segmentMatches, bucketNames: payload.bucketNames },
+			archive: { id, createdAt, reportDate: payload.reportDate, total, rowCount: payload.rows.length, segmentMatches: payload.segmentMatches, bucketNames: payload.bucketNames },
 		}, 201);
 	} catch (error) {
 		try {

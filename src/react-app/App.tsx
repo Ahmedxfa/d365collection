@@ -33,16 +33,21 @@ const MIN_COLUMN_WIDTH = 80;
 const INITIAL_COLUMN_WIDTHS = [260, 145, 150, ...Array(9).fill(125), 145];
 const OVER_30_BUCKET_START = 5;
 const OVER_45_BUCKET_START = 7;
+const AGING_CHART_COLORS = ["#3d9272", "#59a78c", "#78b89f", "#96c8b2", "#b1d4c3", "#d1bb6c", "#d69a55", "#cc7654", "#a94f4f"];
 const COMMISSION_RATE = 0.01;
 const amountFormat = new Intl.NumberFormat("en-US", {
 	minimumFractionDigits: 2,
 	maximumFractionDigits: 2,
 });
+const trendAxisAmountFormat = new Intl.NumberFormat("en-US", {
+	notation: "compact",
+	maximumFractionDigits: 1,
+});
 const percentFormat = new Intl.NumberFormat("ar", {
 	minimumFractionDigits: 0,
 	maximumFractionDigits: 2,
 });
-const dateFormat = new Intl.DateTimeFormat("ar", { dateStyle: "medium", timeStyle: "short" });
+const reportDateFormat = new Intl.DateTimeFormat("ar", { dateStyle: "medium", timeZone: "UTC" });
 type SortColumn = "total" | "bucket";
 type SortDirection = "asc" | "desc";
 interface TableSort {
@@ -74,6 +79,29 @@ interface CollectionPriority {
 	changeOver45: number | null;
 }
 
+interface ArchiveSnapshotRows {
+	id: string;
+	createdAt: string;
+	reportDate: string | null;
+	rows: ProcessingResult["rows"];
+}
+
+interface RepresentativeMetrics {
+	id: string;
+	name: string;
+	rows: ProcessingResult["rows"];
+	total: number;
+	under21: number;
+	under45: number;
+	over45: number;
+	over45Accounts: number;
+	previousTotal: number | null;
+	changeAmount: number | null;
+	changePercent: number | null;
+}
+
+const TREND_SNAPSHOT_LIMIT = 12;
+
 function normalizeArabicName(value: string): string {
 	return value
 		.normalize("NFD")
@@ -100,8 +128,51 @@ function formatPercent(amount: number, total: number): string {
 	return `${percentFormat.format(total === 0 ? 0 : (amount / total) * 100)}٪`;
 }
 
+function formatReportDate(reportDate: string | null | undefined): string {
+	if (reportDate && /^\d{4}-\d{2}-\d{2}$/.test(reportDate)) {
+		return reportDateFormat.format(new Date(`${reportDate}T00:00:00Z`));
+	}
+	return "تاريخ الرصيد غير متوفر";
+}
+
+function archiveOptionLabel(archive: ArchiveSummary): string {
+	return formatReportDate(archive.reportDate);
+}
+
+function compareArchivesByBalanceDate(first: ArchiveSummary, second: ArchiveSummary): number {
+	return (second.reportDate ?? second.createdAt.slice(0, 10)).localeCompare(first.reportDate ?? first.createdAt.slice(0, 10)) ||
+		second.createdAt.localeCompare(first.createdAt);
+}
+
 function sumBucketsFrom(customer: ProcessingResult["rows"][number], startIndex: number): number {
 	return customer.buckets.slice(startIndex).reduce((sum, amount) => sum + amount, 0);
+}
+
+function sumBucketsThrough(customer: ProcessingResult["rows"][number], endIndex: number): number {
+	return customer.buckets.slice(0, endIndex + 1).reduce((sum, amount) => sum + amount, 0);
+}
+
+function amountBetweenBuckets(customer: ProcessingResult["rows"][number], startIndex: number, endIndex: number): number {
+	return customer.buckets.slice(startIndex, endIndex + 1).reduce((sum, amount) => sum + amount, 0);
+}
+
+function totalBalance(rows: ProcessingResult["rows"]): number {
+	return rows.reduce((sum, customer) => sum + customer.total, 0);
+}
+
+function rowsForRepresentativeView(
+	rows: ProcessingResult["rows"],
+	ownerId: string,
+	selectedOwnerIds: Set<string>,
+	includeOtherSegments: boolean,
+): ProcessingResult["rows"] {
+	if (ownerId !== "all") {
+		return rows.filter((customer) => ownerForSegment(customer.segment) === ownerId);
+	}
+	return rows.filter((customer) => {
+		const customerOwnerId = ownerForSegment(customer.segment);
+		return customerOwnerId ? selectedOwnerIds.has(customerOwnerId) : includeOtherSegments;
+	});
 }
 
 function downloadExcel(result: ProcessingResult): void {
@@ -147,6 +218,8 @@ function App() {
 	const [currentArchiveId, setCurrentArchiveId] = useState<string | null>(null);
 	const [previousSnapshot, setPreviousSnapshot] = useState<ProcessingResult["rows"] | null>(null);
 	const [previousSnapshotAt, setPreviousSnapshotAt] = useState<string | null>(null);
+	const [previousSnapshotReportDate, setPreviousSnapshotReportDate] = useState<string | null>(null);
+	const [historySnapshots, setHistorySnapshots] = useState<ArchiveSnapshotRows[]>([]);
 	const [archives, setArchives] = useState<ArchiveSummary[]>([]);
 	const [archiveStatus, setArchiveStatus] = useState<"checking" | "connected" | "local">("checking");
 	const [selectedArchiveIds, setSelectedArchiveIds] = useState<[string, string]>(["", ""]);
@@ -161,6 +234,7 @@ function App() {
 	const [error, setError] = useState("");
 	const [search, setSearch] = useState("");
 	const [segmentFilter, setSegmentFilter] = useState("all");
+	const [activeOwnerId, setActiveOwnerId] = useState<string>("all");
 	const [selectedOwners, setSelectedOwners] = useState<Set<string>>(
 		() => new Set(OWNER_FILTERS.map((owner) => owner.id)),
 	);
@@ -180,16 +254,19 @@ function App() {
 				setArchives(archiveList);
 				setArchiveStatus("connected");
 				if (archiveList.length > 0) {
-					const [latest, previous] = await Promise.all([
-						loadArchive(archiveList[0].id),
-						archiveList[1] ? loadArchive(archiveList[1].id) : Promise.resolve(null),
-					]);
+					const history = await Promise.all(
+						archiveList.slice(0, TREND_SNAPSHOT_LIMIT).map((archive) => loadArchive(archive.id)),
+					);
 					if (!isCurrent) return;
+					const latest = history[0];
+					const previous = history[1] ?? null;
 					setResult(latest);
 					setLastUpdatedAt(latest.createdAt);
 					setCurrentArchiveId(latest.id);
 					setPreviousSnapshot(previous?.rows ?? null);
 					setPreviousSnapshotAt(previous?.createdAt ?? null);
+					setPreviousSnapshotReportDate(previous?.reportDate ?? null);
+					setHistorySnapshots(history.map(({ id, createdAt, reportDate, rows }) => ({ id, createdAt, reportDate, rows })));
 					setSelectedOwners(new Set(OWNER_FILTERS.map((owner) => owner.id)));
 					setShowOtherSegments(false);
 					setSelectedArchiveIds([archiveList[1]?.id ?? "", archiveList[0].id]);
@@ -201,6 +278,7 @@ function App() {
 						setResult(saved.result);
 						setLastUpdatedAt(saved.updatedAt);
 						setArchiveStatus("local");
+						setActiveOwnerId(OWNER_FILTERS[0].id);
 					}
 				}
 			} catch (remoteError: unknown) {
@@ -211,6 +289,7 @@ function App() {
 					if (isCurrent && saved) {
 						setResult(saved.result);
 						setLastUpdatedAt(saved.updatedAt);
+						setActiveOwnerId(OWNER_FILTERS[0].id);
 					}
 				} catch (storageError: unknown) {
 					setError(`تعذر استعادة النسخة السحابية والمحلية: ${storageError instanceof Error ? storageError.message : String(remoteError)}`);
@@ -250,6 +329,172 @@ function App() {
 				: showOtherSegments;
 		});
 	}, [result, selectedOwners, showOtherSegments]);
+
+	const dashboardResult = comparison?.second ?? result;
+	const dashboardRows = useMemo(() => dashboardResult?.rows ?? [], [dashboardResult]);
+	const dashboardPreviousRows = comparison?.first.rows ?? previousSnapshot;
+	const dashboardPreviousDate = comparison
+		? comparison.first.reportDate
+		: previousSnapshotReportDate;
+	const dashboardPreviousCreatedAt = comparison
+		? comparison.first.createdAt
+		: previousSnapshotAt;
+
+	const representativeMetrics = useMemo<RepresentativeMetrics[]>(() => OWNER_FILTERS.map((owner) => {
+		const rows = dashboardRows.filter((customer) => ownerForSegment(customer.segment) === owner.id);
+		const previousRows = (dashboardPreviousRows ?? []).filter((customer) => ownerForSegment(customer.segment) === owner.id);
+		const total = totalBalance(rows);
+		const previousTotal = dashboardPreviousRows ? totalBalance(previousRows) : null;
+		const changeAmount = previousTotal === null ? null : total - previousTotal;
+		return {
+			id: owner.id,
+			name: owner.name,
+			rows,
+			total,
+			under21: rows.reduce((sum, customer) => sum + sumBucketsThrough(customer, 3), 0),
+			under45: rows.reduce((sum, customer) => sum + sumBucketsThrough(customer, 6), 0),
+			over45: rows.reduce((sum, customer) => sum + sumBucketsFrom(customer, OVER_45_BUCKET_START), 0),
+			over45Accounts: rows.filter((customer) => sumBucketsFrom(customer, OVER_45_BUCKET_START) > 0).length,
+			previousTotal,
+			changeAmount,
+			changePercent: previousTotal === null || previousTotal === 0
+				? null
+				: ((changeAmount ?? 0) / previousTotal) * 100,
+		};
+	}), [dashboardPreviousRows, dashboardRows]);
+
+	const activeRepresentativeRows = rowsForRepresentativeView(
+		dashboardRows,
+		activeOwnerId,
+		selectedOwners,
+		showOtherSegments,
+	);
+	const activeRepresentativeName = activeOwnerId === "all"
+		? selectedOwners.size === OWNER_FILTERS.length
+			? showOtherSegments ? "المندوبون الستة وباقي الفروع" : "المندوبون الستة"
+			: "المندوبون المحددون"
+		: representativeMetrics.find((owner) => owner.id === activeOwnerId)?.name ?? "المندوب";
+	const activeRepresentativeTotal = totalBalance(activeRepresentativeRows);
+	const activeRepresentativeUnder21 = activeRepresentativeRows.reduce(
+		(sum, customer) => sum + sumBucketsThrough(customer, 3),
+		0,
+	);
+	const activeRepresentativeUnder45 = activeRepresentativeRows.reduce(
+		(sum, customer) => sum + sumBucketsThrough(customer, 6),
+		0,
+	);
+	const activeRepresentativeOver45 = activeRepresentativeRows.reduce(
+		(sum, customer) => sum + sumBucketsFrom(customer, OVER_45_BUCKET_START),
+		0,
+	);
+	const activeRepresentative30To45 = activeRepresentativeRows.reduce(
+		(sum, customer) => sum + amountBetweenBuckets(customer, OVER_30_BUCKET_START, OVER_45_BUCKET_START - 1),
+		0,
+	);
+	const previousRowsForActive = rowsForRepresentativeView(
+		dashboardPreviousRows ?? [],
+		activeOwnerId,
+		selectedOwners,
+		showOtherSegments,
+	);
+	const previousTotalForActive = dashboardPreviousRows ? totalBalance(previousRowsForActive) : null;
+	const activeChangeAmount = previousTotalForActive === null
+		? null
+		: activeRepresentativeTotal - previousTotalForActive;
+	const activeChangePercent = previousTotalForActive === null || previousTotalForActive === 0
+		? null
+		: ((activeChangeAmount ?? 0) / previousTotalForActive) * 100;
+	const activeBucketTotals = (dashboardResult?.bucketNames ?? []).map((name, index) => ({
+		name,
+		amount: activeRepresentativeRows.reduce((sum, customer) => sum + (customer.buckets[index] ?? 0), 0),
+	}));
+	const snapshotsForTrend = comparison
+		? [
+			{ id: comparison.first.id, createdAt: comparison.first.createdAt, reportDate: comparison.first.reportDate, rows: comparison.first.rows },
+			{ id: comparison.second.id, createdAt: comparison.second.createdAt, reportDate: comparison.second.reportDate, rows: comparison.second.rows },
+		]
+		: historySnapshots.length > 0
+			? historySnapshots
+			: result && lastUpdatedAt
+				? [{ id: currentArchiveId ?? "local", createdAt: lastUpdatedAt, reportDate: result.reportDate ?? null, rows: result.rows }]
+				: [];
+	const activeTrend = snapshotsForTrend.map((snapshot) => ({
+		id: snapshot.id,
+		createdAt: snapshot.createdAt,
+		reportDate: snapshot.reportDate,
+		total: totalBalance(rowsForRepresentativeView(
+			snapshot.rows,
+			activeOwnerId,
+			selectedOwners,
+			showOtherSegments,
+		)),
+	})).sort((first, second) =>
+		(first.reportDate ?? first.createdAt.slice(0, 10)).localeCompare(second.reportDate ?? second.createdAt.slice(0, 10)) ||
+		first.createdAt.localeCompare(second.createdAt),
+	);
+	const trendMinimum = Math.min(0, ...activeTrend.map((snapshot) => snapshot.total));
+	const trendMaximum = Math.max(1, ...activeTrend.map((snapshot) => snapshot.total));
+	const trendAxisLabels = [trendMaximum, (trendMinimum + trendMaximum) / 2, trendMinimum];
+	const trendPoints = activeTrend.map((snapshot, index) => {
+		const x = activeTrend.length <= 1 ? 440 : 100 + (index / (activeTrend.length - 1)) * 680;
+		const y = 170 - ((snapshot.total - trendMinimum) / (trendMaximum - trendMinimum)) * 145;
+		return { ...snapshot, x, y };
+	});
+	const trendPath = trendPoints.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
+	const topFiveForActive = activeRepresentativeRows
+		.map((customer) => ({
+			...customer,
+			over45: sumBucketsFrom(customer, OVER_45_BUCKET_START),
+			under45: sumBucketsThrough(customer, 6),
+		}))
+		.filter((customer) => customer.over45 > 0)
+		.sort((first, second) => second.over45 - first.over45)
+		.slice(0, 5);
+	const activeOver45Total = activeRepresentativeOver45;
+	const topFiveOver45 = topFiveForActive.reduce((sum, customer) => sum + customer.over45, 0);
+	const previous30PlusByAccount = new Map(
+		previousRowsForActive.map((customer) => [
+			customer.account,
+			sumBucketsFrom(customer, OVER_30_BUCKET_START),
+		]),
+	);
+	const previousOver45ByAccount = new Map(
+		previousRowsForActive.map((customer) => [
+			customer.account,
+			sumBucketsFrom(customer, OVER_45_BUCKET_START),
+		]),
+	);
+	const activeReducedOver45Count = activeRepresentativeRows.filter((customer) => {
+		const previousOver45 = previousOver45ByAccount.get(customer.account);
+		return previousOver45 !== undefined &&
+			sumBucketsFrom(customer, OVER_45_BUCKET_START) < previousOver45;
+	}).length;
+	const activeNewlyOver30Rows = activeRepresentativeRows.filter((customer) =>
+		(previous30PlusByAccount.get(customer.account) ?? 0) <= 0 &&
+		sumBucketsFrom(customer, OVER_30_BUCKET_START) > 0,
+	);
+	const activeNewlyOver30Balance = activeNewlyOver30Rows.reduce(
+		(sum, customer) => sum + sumBucketsFrom(customer, OVER_30_BUCKET_START),
+		0,
+	);
+	const positiveAgingBuckets = activeBucketTotals.filter((bucket) => bucket.amount > 0);
+	const positiveAgingTotal = positiveAgingBuckets.reduce((sum, bucket) => sum + bucket.amount, 0);
+	let agingAngle = 0;
+	const agingDonut = positiveAgingTotal > 0
+		? `conic-gradient(${positiveAgingBuckets.map((bucket) => {
+			const startAngle = agingAngle;
+			agingAngle += (bucket.amount / positiveAgingTotal) * 360;
+			return `${AGING_CHART_COLORS[activeBucketTotals.indexOf(bucket)]} ${startAngle}deg ${agingAngle}deg`;
+		}).join(", ")})`
+		: "conic-gradient(#e9efea 0deg 360deg)";
+	const maxRepresentativeBucket = Math.max(
+		1,
+		...representativeMetrics.flatMap((owner) =>
+			(owner.rows[0]?.buckets ?? []).map((_, index) =>
+				owner.rows.reduce((sum, customer) => sum + Math.max(0, customer.buckets[index] ?? 0), 0),
+			),
+		),
+	);
 
 	const segments = useMemo(() => {
 		if (!result) return [];
@@ -345,6 +590,20 @@ function App() {
 	const increasedOver45Count = priorityAccounts.filter(
 		(customer) => customer.changeOver45 !== null && customer.changeOver45 > 0,
 	).length;
+
+	function selectRepresentative(ownerId: string): void {
+		setActiveOwnerId(ownerId);
+		setSearch("");
+		setSegmentFilter("all");
+		setPage(1);
+		if (ownerId === "all") {
+			setSelectedOwners(new Set(OWNER_FILTERS.map((owner) => owner.id)));
+			setShowOtherSegments(false);
+		} else {
+			setSelectedOwners(new Set([ownerId]));
+			setShowOtherSegments(false);
+		}
+	}
 	const commissionBySegment = useMemo(() => {
 		const totals = new Map<string, { total: number; over30: number; over45: number; count: number }>();
 		for (const customer of selectedRows) {
@@ -365,8 +624,8 @@ function App() {
 	const maxSegment = Math.max(0, ...segments.slice(0, 8).map(([, amount]) => amount));
 	const otherSegments = segments.slice(8);
 	const otherSegmentTotal = otherSegments.reduce((sum, [, amount]) => sum + amount, 0);
-	const formattedLastUpdated = lastUpdatedAt
-		? dateFormat.format(new Date(lastUpdatedAt))
+	const formattedBalanceDate = result
+		? formatReportDate(result.reportDate)
 		: "لا توجد بيانات محفوظة";
 
 	async function handleFileChange(key: UploadKey, event: ChangeEvent<HTMLInputElement>) {
@@ -399,6 +658,7 @@ function App() {
 				if (result) {
 					setPreviousSnapshot(result.rows);
 					setPreviousSnapshotAt(lastUpdatedAt);
+					setPreviousSnapshotReportDate(result.reportDate ?? null);
 				}
 				setResult(processed);
 				setLastUpdatedAt(updatedAt);
@@ -410,7 +670,11 @@ function App() {
 					const archive = await saveArchive(processed);
 					setCurrentArchiveId(archive.id);
 					setLastUpdatedAt(archive.createdAt);
-					setArchives((current) => [archive, ...current]);
+					setArchives((current) => [archive, ...current].sort(compareArchivesByBalanceDate));
+					setHistorySnapshots((current) => [
+						{ id: archive.id, createdAt: archive.createdAt, reportDate: archive.reportDate, rows: processed.rows },
+						...current.filter((snapshot) => snapshot.id !== archive.id),
+					].sort((first, second) => compareArchivesByBalanceDate(first, second)).slice(0, TREND_SNAPSHOT_LIMIT));
 					setSelectedArchiveIds((current) => [current[0] || current[1], archive.id]);
 					setArchiveStatus("connected");
 				} catch (storageError) {
@@ -435,7 +699,7 @@ function App() {
 		if (!result) return;
 		try {
 			const archive = await saveArchive(result);
-			setArchives((current) => [archive, ...current]);
+			setArchives((current) => [archive, ...current].sort(compareArchivesByBalanceDate));
 			setCurrentArchiveId(archive.id);
 			setLastUpdatedAt(archive.createdAt);
 			setArchiveStatus("connected");
@@ -446,11 +710,12 @@ function App() {
 	}
 
 	async function removeArchive(archive: ArchiveSummary): Promise<void> {
-		if (!window.confirm(`هل تريد حذف نسخة ${dateFormat.format(new Date(archive.createdAt))} نهائياً من الأرشيف؟`)) return;
+		if (!window.confirm(`هل تريد حذف نسخة ${formatReportDate(archive.reportDate)} نهائياً من الأرشيف؟`)) return;
 		try {
 			await deleteArchive(archive.id);
 			const remaining = archives.filter((item) => item.id !== archive.id);
 			setArchives(remaining);
+			setHistorySnapshots((current) => current.filter((snapshot) => snapshot.id !== archive.id));
 			setComparison(null);
 			if (currentArchiveId === archive.id) {
 				setCurrentArchiveId(remaining[0]?.id ?? null);
@@ -463,6 +728,7 @@ function App() {
 					setLastUpdatedAt(latest.createdAt);
 					setPreviousSnapshot(previous?.rows ?? null);
 					setPreviousSnapshotAt(previous?.createdAt ?? null);
+					setPreviousSnapshotReportDate(previous?.reportDate ?? null);
 				} else {
 					setResult(null);
 					setLastUpdatedAt(null);
@@ -630,8 +896,8 @@ function App() {
 					/>
 				</div>
 				<div className="header-data-info">
-					<span>آخر تحديث للبيانات</span>
-					<strong>{isRestoring ? "جاري الاستعادة…" : formattedLastUpdated}</strong>
+					<span>تاريخ الرصيد</span>
+					<strong>{isRestoring ? "جاري الاستعادة…" : formattedBalanceDate}</strong>
 				</div>
 			</header>
 			<div className="header-notice" role="status">
@@ -655,56 +921,338 @@ function App() {
 				</div>
 			)}
 
-			<section className="hero" id="top">
-				<div className="hero-copy">
-					<div className="eyebrow"><span /> تحليل أعمار الديون</div>
-					<h1>كل فتراتك،<br /><span>في ملف واحد.</span></h1>
-					<p>
-						ارفع تصديري Dynamics وملف السيجمينت. سنجمع الفترات غير المكررة لكل
-						عميل ونتأكد أن مجموعها يطابق رصيده الفعلي.
-					</p>
-					<div className="hero-footnote">
-						<span className="sparkle">✳</span>
-						ملف Excel موحّد، جاهز للعرض
+			<section className="sales-dashboard-hero" id="top" aria-labelledby="sales-dashboard-title">
+				<div className="sales-dashboard-heading">
+					<div>
+						<p className="section-kicker">مؤشرات المحافظ والتحصيل</p>
+						<h1 id="sales-dashboard-title">لوحة أداء المندوبين</h1>
+						<p>اختر المندوب لمراجعة حجم المحفظة، أعمار الأرصدة، واتجاه التغير مقارنة بالنسخة السابقة.</p>
 					</div>
 				</div>
-				<div className="hero-art" aria-hidden="true">
-					<div className="art-orbit orbit-one" />
-					<div className="art-orbit orbit-two" />
-					<div className="art-card">
-						<div className="art-card-header"><i /><i /><i /></div>
-						<div className="art-card-total">9</div>
-						<div className="art-card-caption">فترات عمرية في ملف واحد</div>
-						<div className="art-chart">
-							<span style={{ height: "36%" }} />
-							<span style={{ height: "52%" }} />
-							<span style={{ height: "42%" }} />
-							<span style={{ height: "68%" }} />
-							<span style={{ height: "56%" }} />
-							<span style={{ height: "82%" }} />
-							<span style={{ height: "72%" }} />
-							<span style={{ height: "100%" }} />
+				<div className="dashboard-toolbar">
+					<div className="sales-update-chip">
+						<span className="privacy-dot" />
+						<span>{dashboardResult
+							? dashboardResult.reportDate
+								? `تاريخ الرصيد · ${formatReportDate(dashboardResult.reportDate)}`
+								: formatReportDate(dashboardResult.reportDate)
+							: "بانتظار أول تحديث"}</span>
+					</div>
+					{archives.length > 0 && (
+						<div className="comparison-controls dashboard-comparison-controls">
+							<span className="comparison-strip-label">مقارنة:</span>
+							<label>
+								<span>من</span>
+								<select
+									aria-label="فترة الأساس للمقارنة"
+									value={selectedArchiveIds[0]}
+									onChange={(event) => {
+										setSelectedArchiveIds((current) => [event.target.value, current[1]]);
+										setComparison(null);
+									}}
+								>
+									<option value="">اختر فترة</option>
+									{archives.map((archive) => (
+										<option key={archive.id} value={archive.id}>
+											{archiveOptionLabel(archive)} · {formatAmount(archive.total)}
+										</option>
+									))}
+								</select>
+							</label>
+							<label>
+								<span>إلى</span>
+								<select
+									aria-label="فترة العرض للمقارنة"
+									value={selectedArchiveIds[1]}
+									onChange={(event) => {
+										setSelectedArchiveIds(([first]) => [first, event.target.value]);
+										setComparison(null);
+									}}
+								>
+									<option value="">اختر فترة</option>
+									{archives.map((archive) => (
+										<option key={archive.id} value={archive.id}>
+											{archiveOptionLabel(archive)} · {formatAmount(archive.total)}
+										</option>
+									))}
+								</select>
+							</label>
+							<button
+								className="button button-dark"
+								type="button"
+								disabled={isComparing || archives.length < 2 || !selectedArchiveIds[0] || !selectedArchiveIds[1] || selectedArchiveIds[0] === selectedArchiveIds[1]}
+								onClick={() => void compareArchives()}
+							>
+								{isComparing ? "جارٍ…" : "تطبيق"}
+							</button>
 						</div>
-						<div className="art-card-footer"><span /> فترات العمر والرصيد</div>
+					)}
+				</div>
+				<div className="representative-selector" role="group" aria-label="اختيار مندوب المبيعات">
+					<button
+						type="button"
+						className={`representative-card representative-all-card${activeOwnerId === "all" && !showOtherSegments && selectedOwners.size === OWNER_FILTERS.length ? " active" : ""}`}
+						aria-pressed={activeOwnerId === "all" && !showOtherSegments && selectedOwners.size === OWNER_FILTERS.length}
+						onClick={() => selectRepresentative("all")}
+					>
+						<span>كل المندوبين</span>
+						<strong>{formatAmount(totalBalance(rowsForRepresentativeView(dashboardRows, "all", selectedOwners, showOtherSegments)))}</strong>
+						<small>{rowsForRepresentativeView(dashboardRows, "all", selectedOwners, showOtherSegments).length} حساب</small>
+					</button>
+					{representativeMetrics.map((owner) => (
+						<button
+							type="button"
+							className={`representative-card${activeOwnerId === owner.id ? " active" : ""}`}
+							aria-pressed={activeOwnerId === owner.id}
+							key={owner.id}
+							onClick={() => selectRepresentative(owner.id)}
+						>
+							<span>{owner.name}</span>
+							<strong>{formatAmount(owner.total)}</strong>
+							<small className={owner.changeAmount === null || owner.changeAmount === 0 ? "" : owner.changeAmount > 0 ? "change-up" : "change-down"}>
+								{owner.changePercent === null
+									? owner.previousTotal === null ? "لا يوجد تحديث سابق" : owner.total > 0 ? "محفظة جديدة" : "لا تغيير"
+									: `${owner.changeAmount !== null && owner.changeAmount > 0 ? "↑ " : owner.changeAmount !== null && owner.changeAmount < 0 ? "↓ " : ""}${owner.changePercent > 0 ? "+" : ""}${percentFormat.format(owner.changePercent)}٪ عن السابق`}
+							</small>
+						</button>
+					))}
+					<button
+						type="button"
+						className={`representative-card representative-other-card${showOtherSegments ? " active" : ""}`}
+						aria-pressed={showOtherSegments}
+						onClick={() => {
+							setActiveOwnerId("all");
+							setSelectedOwners(new Set(OWNER_FILTERS.map((owner) => owner.id)));
+							setShowOtherSegments((visible) => !visible);
+							setSearch("");
+							setSegmentFilter("all");
+							setPage(1);
+						}}
+					>
+						<span>باقي الفروع</span>
+						<strong>{formatAmount(totalBalance(dashboardRows.filter((customer) => ownerForSegment(customer.segment) === null)))}</strong>
+						<small>{dashboardRows.filter((customer) => ownerForSegment(customer.segment) === null).length} حساب</small>
+					</button>
+				</div>
+				{result ? (
+					<div
+						key={`${activeOwnerId}-${showOtherSegments}-${[...selectedOwners].sort().join(",")}`}
+						className="representative-view-transition"
+					>
+						<div className="representative-dashboard-heading">
+							<div>
+								<p className="panel-kicker">لوحة المندوب</p>
+								<h2>{activeRepresentativeName}</h2>
+							</div>
+							<span className="representative-comparison-note">
+								{dashboardPreviousCreatedAt
+									? `مقارنة مع ${formatReportDate(dashboardPreviousDate)}`
+									: "ارفع لقطة أخرى لإظهار اتجاه الأداء"}
+							</span>
+						</div>
+						<div className="rep-kpi-grid">
+							<article className="rep-kpi-card">
+								<span>إجمالي الرصيد</span>
+								<strong>{formatAmount(activeRepresentativeTotal)}</strong>
+								<small className={`risk-change${activeChangeAmount === null || activeChangeAmount === 0 ? "" : activeChangeAmount > 0 ? " change-up" : " change-down"}`}>
+									{activeChangeAmount === null
+										? dashboardPreviousRows ? "لا توجد قيمة سابقة" : "لا توجد مقارنة بعد"
+										: `${activeChangeAmount > 0 ? "↑ " : activeChangeAmount < 0 ? "↓ " : ""}${activeChangeAmount > 0 ? "+" : ""}${formatAmount(activeChangeAmount)} (${activeChangePercent === null ? "—" : `${activeChangePercent > 0 ? "+" : ""}${percentFormat.format(activeChangePercent)}٪`}) ${activeChangeAmount > 0 ? "· ارتفاع يحتاج متابعة" : activeChangeAmount < 0 ? "· انخفاض محتمل" : "· دون تغيير"}`}
+								</small>
+								<small className="rep-kpi-footnote">تغير الرصيد لا يثبت التحصيل وحده</small>
+							</article>
+							<article className="rep-kpi-card">
+								<span>الرصيد حتى 21 يوماً</span>
+								<strong>{formatAmount(activeRepresentativeUnder21)}</strong>
+								<small>{formatPercent(activeRepresentativeUnder21, activeRepresentativeTotal)} من المحفظة · Current وحتى فترة أقل من 21</small>
+							</article>
+							<article className="rep-kpi-card">
+								<span>الرصيد حتى 45 يوماً</span>
+								<strong>{formatAmount(activeRepresentativeUnder45)}</strong>
+								<small>{formatPercent(activeRepresentativeUnder45, activeRepresentativeTotal)} من المحفظة · الفترات حتى أقل من 45</small>
+							</article>
+							<article className="rep-kpi-card rep-kpi-risk">
+								<span>الرصيد فوق 45 يوماً</span>
+								<strong>{formatAmount(activeRepresentativeOver45)}</strong>
+								<small>{formatPercent(activeRepresentativeOver45, activeRepresentativeTotal)} من المحفظة · {activeRepresentativeRows.filter((customer) => sumBucketsFrom(customer, OVER_45_BUCKET_START) > 0).length} حساب</small>
+							</article>
+							<article className="rep-kpi-card rep-kpi-risk">
+								<span>العمولة المفقودة التقديرية · +45 · 1٪</span>
+								<strong>{formatAmount(activeRepresentativeOver45 * COMMISSION_RATE)}</strong>
+								<small>تقدير العمولة المرتبطة بالرصيد فوق 45 يوماً</small>
+							</article>
+							<article className="rep-kpi-card rep-kpi-warning">
+								<span>العمولة المعرّضة للفقد · 30–45 · 1٪</span>
+								<strong>{formatAmount(activeRepresentative30To45 * COMMISSION_RATE)}</strong>
+								<small>الرصيد 30–45: {formatAmount(activeRepresentative30To45)}</small>
+							</article>
+							<article className="rep-kpi-card rep-kpi-warning">
+								<span>حسابات دخلت +30 منذ فترة الأساس</span>
+								<strong>{dashboardPreviousRows ? activeNewlyOver30Rows.length : "—"}</strong>
+								<small>{dashboardPreviousRows ? `أرصدة +30 لهذه الحسابات: ${formatAmount(activeNewlyOver30Balance)}` : "اختر فترة مقارنة لعرض التغير"}</small>
+							</article>
+						</div>
+						<div className="rep-chart-grid">
+							<article className="rep-chart-card">
+								<div className="rep-chart-heading">
+									<div>
+										<h3>اتجاه إجمالي الرصيد</h3>
+										<p>{comparison ? "الفترة المحددة مقارنة بفترة الأساس" : `حسب آخر ${activeTrend.length} لقطات محفوظة`} · لا يمثل التحصيل وحده</p>
+									</div>
+									<strong>{formatAmount(activeRepresentativeTotal)}</strong>
+								</div>
+								{activeTrend.length > 0 ? (
+									<>
+										<svg className="rep-line-chart" viewBox="0 0 780 190" role="img" aria-label={`اتجاه الرصيد للمندوب ${activeRepresentativeName}`}>
+											{trendAxisLabels.map((amount, index) => {
+												const y = [25, 96, 170][index];
+												return (
+													<g key={index}>
+														<text className="rep-trend-axis-label" x="0" y={y + 4}>
+															<title>{formatAmount(amount)}</title>
+															{trendAxisAmountFormat.format(amount)}
+														</text>
+														<line x1="88" y1={y} x2="780" y2={y} />
+													</g>
+												);
+											})}
+											{activeTrend.length > 1 && <path className="rep-trend-path" d={trendPath} />}
+											{trendPoints.map((point) => (
+												<circle key={point.id} cx={point.x} cy={point.y} r="5">
+													<title>{formatReportDate(point.reportDate)}: {formatAmount(point.total)}</title>
+												</circle>
+											))}
+										</svg>
+										<div className="rep-chart-labels">
+											<span>{activeTrend[0] ? formatReportDate(activeTrend[0].reportDate) : ""}</span>
+											<span>{activeTrend.length > 1 ? `${activeTrend.length} لقطات` : "لقطة واحدة"}</span>
+											<span>{activeTrend.length > 1 ? formatReportDate(activeTrend[activeTrend.length - 1].reportDate) : ""}</span>
+										</div>
+									</>
+								) : <p className="rep-chart-empty">لا توجد بيانات تاريخية لهذا المندوب.</p>}
+							</article>
+							<article className="rep-chart-card">
+								<div className="rep-chart-heading">
+									<div>
+										<h3>حصة الفترات من رصيد المندوب</h3>
+										<p>توزيع نسبي حسب شرائح الأعمار · القيم السالبة مستبعدة من الدائرة</p>
+									</div>
+								</div>
+								<div className="aging-donut-layout">
+									<div
+										className="aging-donut"
+										style={{ background: agingDonut }}
+										role="img"
+										aria-label={`توزيع ${formatAmount(positiveAgingTotal)} على فترات أعمار الرصيد`}
+									>
+										<div className="aging-donut-center">
+											<strong>{formatAmount(positiveAgingTotal)}</strong>
+											<span>إجمالي موجب</span>
+										</div>
+									</div>
+									<div className="aging-donut-legend">
+										{activeBucketTotals.map((bucket, index) => (
+											<div className="aging-legend-item" key={`${index}-${bucket.name}`}>
+												<span className="aging-legend-dot" style={{ backgroundColor: AGING_CHART_COLORS[index % AGING_CHART_COLORS.length] }} />
+												<span className="aging-legend-name">{bucket.name}</span>
+												<strong>{formatPercent(Math.max(0, bucket.amount), positiveAgingTotal)}</strong>
+												<small>{formatAmount(bucket.amount)}</small>
+											</div>
+										))}
+									</div>
+								</div>
+							</article>
+						</div>
+						<div className="rep-bottom-grid">
+							<article className="rep-chart-card concentration-card">
+								<div className="rep-chart-heading">
+									<div>
+										<h3>تركيز متأخرات +45</h3>
+										<p>أكبر الحسابات المتأخرة من رصيد المندوب</p>
+									</div>
+									<strong>{formatPercent(topFiveOver45, activeOver45Total)}</strong>
+								</div>
+								{topFiveForActive.length > 0 ? topFiveForActive.map((customer, index) => (
+									<div className="concentration-row" key={customer.account}>
+										<div>
+											<span className="concentration-rank">{index + 1}</span>
+											<span className="concentration-name">{customer.name || customer.account}</span>
+											<strong>{formatAmount(customer.over45)}</strong>
+										</div>
+										<div className="bar-track">
+											<div className="bar-fill priority-concentration-fill" style={{ width: `${Math.max(0, (customer.over45 / Math.max(activeOver45Total, 1)) * 100)}%` }} />
+										</div>
+									</div>
+								)) : <p className="rep-chart-empty">لا توجد متأخرات +45 لدى هذا المندوب.</p>}
+								<p className="rep-chart-footnote">أعلى 5 حسابات تشكل {formatPercent(topFiveOver45, activeOver45Total)} من إجمالي +45.</p>
+							</article>
+							<article className="rep-chart-card">
+								<div className="rep-chart-heading">
+									<div>
+										<h3>نبض المحفظة</h3>
+										<p>إشارات متابعة تساعد على ترتيب يوم المندوب</p>
+									</div>
+								</div>
+								<div className="rep-signal-list">
+									<div><span>حسابات عليها رصيد +45</span><strong>{activeRepresentativeRows.filter((customer) => sumBucketsFrom(customer, OVER_45_BUCKET_START) > 0).length}</strong></div>
+									<div className="signal-worsened"><span>دخلت +30 منذ فترة الأساس</span><strong>{dashboardPreviousRows ? activeNewlyOver30Rows.length : "—"}</strong></div>
+									<div className="signal-improved"><span>انخفض رصيد +45 عن فترة الأساس</span><strong>{dashboardPreviousRows ? activeReducedOver45Count : "—"}</strong></div>
+									<div className="signal-worsened"><span>عمولة معرضة للفقد · رصيد 30–45 · 1٪</span><strong>{formatAmount(activeRepresentative30To45 * COMMISSION_RATE)}</strong></div>
+								</div>
+							</article>
+						</div>
+						<article className="rep-chart-card rep-heatmap-card">
+							<div className="rep-chart-heading">
+								<div>
+									<h3>خريطة أعمار الأرصدة حسب المندوب</h3>
+								<p>قيمة كل فترة للمقارنة السريعة · الأخضر حتى 45 والأحمر +45</p>
+								</div>
+							</div>
+							<div className="rep-heatmap-scroll">
+								<table className="rep-heatmap">
+									<thead>
+										<tr>
+											<th scope="col">المندوب</th>
+											{dashboardResult?.bucketNames.map((bucket, index) => (
+												<th scope="col" key={`${index}-${bucket}`}>{bucket}</th>
+											))}
+											<th scope="col">إجمالي +45</th>
+										</tr>
+									</thead>
+									<tbody>
+										{representativeMetrics.map((owner) => (
+											<tr key={owner.id}>
+												<th scope="row">{owner.name}</th>
+												{dashboardResult?.bucketNames.map((bucket, index) => {
+													const amount = owner.rows.reduce((sum, customer) => sum + (customer.buckets[index] ?? 0), 0);
+													const intensity = Math.min(0.82, Math.max(0.08, Math.abs(amount) / maxRepresentativeBucket * 0.82));
+													const riskCell = amount < 0 || index >= OVER_45_BUCKET_START;
+													return (
+														<td
+															key={`${owner.id}-${index}-${bucket}`}
+															className={riskCell ? "heat-risk" : ""}
+															style={{ backgroundColor: riskCell ? `rgba(169, 79, 79, ${intensity})` : `rgba(61, 146, 114, ${intensity})` }}
+															title={`${owner.name} · ${bucket}: ${formatAmount(amount)}`}
+														>
+															{formatAmount(amount)}
+														</td>
+													);
+												})}
+												<td className="heat-total">{formatAmount(owner.over45)}</td>
+											</tr>
+										))}
+									</tbody>
+								</table>
+							</div>
+						</article>
 					</div>
-					<div className="art-badge">✓ مطابق</div>
-					<div className="art-spark">✳</div>
-				</div>
-			</section>
-
-			<section className="workflow" aria-label="خطوات المعالجة">
-				<div className="workflow-step active">
-					<span>١</span><strong>رفع الملفات</strong>
-				</div>
-				<div className={`workflow-line${result ? " complete" : ""}`} />
-				<div className={`workflow-step${isProcessing || result ? " active" : ""}`}>
-					<span>{isProcessing ? <i className="spinner" /> : "٢"}</span>
-					<strong>دمج الفترات والسيجمينت</strong>
-				</div>
-				<div className={`workflow-line${result ? " complete" : ""}`} />
-				<div className={`workflow-step${result ? " active" : ""}`}>
-					<span>٣</span><strong>لوحة العرض وExcel</strong>
-				</div>
+				) : (
+					<div className="rep-dashboard-empty">
+						<div className="rep-empty-icon">↥</div>
+						<h2>ارفع الملفات لبدء لوحة أداء المندوبين</h2>
+						<p>اختر ملفي الفترات وملف السيجمينت من الشريط العلوي؛ ستظهر هنا المحافظ ومؤشرات أعمار الدين.</p>
+					</div>
+				)}
 			</section>
 
 			{result && (
@@ -760,51 +1308,23 @@ function App() {
 									{archives.map((archive) => (
 										<div className="archive-item" key={archive.id}>
 											<div>
-												<strong>{dateFormat.format(new Date(archive.createdAt))}</strong>
+												<strong>{archive.reportDate
+													? `تاريخ الرصيد · ${formatReportDate(archive.reportDate)}`
+													: formatReportDate(archive.reportDate)}</strong>
 												<span>{archive.rowCount} حساب · رصيد {formatAmount(archive.total)}</span>
 											</div>
 											<button type="button" onClick={() => void removeArchive(archive)}>حذف النسخة</button>
 										</div>
 									))}
 								</div>
-								<div className="comparison-controls">
-									<label>
-										<span>النسخة الأقدم</span>
-										<select
-											value={selectedArchiveIds[0]}
-											onChange={(event) => setSelectedArchiveIds((current) => [event.target.value, current[1]])}
-										>
-											<option value="">اختر نسخة</option>
-											{archives.map((archive) => <option key={archive.id} value={archive.id}>{dateFormat.format(new Date(archive.createdAt))}</option>)}
-										</select>
-									</label>
-									<label>
-										<span>النسخة الأحدث</span>
-										<select
-											value={selectedArchiveIds[1]}
-											onChange={(event) => setSelectedArchiveIds(([first]) => [first, event.target.value])}
-										>
-											<option value="">اختر نسخة</option>
-											{archives.map((archive) => <option key={archive.id} value={archive.id}>{dateFormat.format(new Date(archive.createdAt))}</option>)}
-										</select>
-									</label>
-									<button
-										className="button button-dark"
-										type="button"
-										disabled={isComparing || archives.length < 2}
-										onClick={() => void compareArchives()}
-									>
-										{isComparing ? "جاري المقارنة…" : "مقارنة المندوبين"}
-									</button>
-								</div>
 							</>
 						)}
 						{comparison && (
 							<div className="comparison-results">
 								<p>
-									المقارنة من {dateFormat.format(new Date(comparison.first.createdAt))}
+									المقارنة من {formatReportDate(comparison.first.reportDate)}
 									{" إلى "}
-									{dateFormat.format(new Date(comparison.second.createdAt))}
+									{formatReportDate(comparison.second.reportDate)}
 								</p>
 								<div className="comparison-table-scroll">
 									<table className="comparison-table">
@@ -847,22 +1367,24 @@ function App() {
 								<button
 									type="button"
 									onClick={() => {
+										setActiveOwnerId("all");
 										setSelectedOwners(new Set(OWNER_FILTERS.map((owner) => owner.id)));
 										setShowOtherSegments(false);
 										setPage(1);
 									}}
 								>
-									تحديد المهمين
+									المندوبون الستة فقط
 								</button>
 								<button
 									type="button"
 									onClick={() => {
+										setActiveOwnerId("all");
 										setSelectedOwners(new Set(OWNER_FILTERS.map((owner) => owner.id)));
 										setShowOtherSegments(true);
 										setPage(1);
 									}}
 								>
-									إظهار الكل
+									مع باقي الفروع
 								</button>
 							</div>
 						</div>
@@ -876,6 +1398,7 @@ function App() {
 											type="checkbox"
 											checked={checked}
 											onChange={(event) => {
+												setActiveOwnerId("all");
 												setSelectedOwners((current) => {
 													const next = new Set(current);
 													if (event.target.checked) next.add(owner.id);
@@ -899,6 +1422,7 @@ function App() {
 									type="checkbox"
 									checked={showOtherSegments}
 									onChange={(event) => {
+										setActiveOwnerId("all");
 										setShowOtherSegments(event.target.checked);
 										setSegmentFilter("all");
 										setPage(1);
@@ -962,7 +1486,7 @@ function App() {
 							</div>
 							<span className="panel-period">
 								{previousSnapshotAt
-									? `التغير مقابل ${dateFormat.format(new Date(previousSnapshotAt))}`
+									? `التغير مقابل ${formatReportDate(previousSnapshotReportDate)}`
 									: "لا توجد نسخة سابقة لقياس التغير"}
 							</span>
 						</div>

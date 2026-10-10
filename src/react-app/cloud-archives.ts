@@ -3,6 +3,7 @@ import type { ProcessingResult } from "./processor";
 export interface ArchiveSummary {
 	id: string;
 	createdAt: string;
+	reportDate: string | null;
 	total: number;
 	rowCount: number;
 	segmentMatches: number;
@@ -49,6 +50,7 @@ export async function saveArchive(result: ProcessingResult): Promise<ArchiveSumm
 			rows: result.rows,
 			total: result.total,
 			segmentMatches: result.segmentMatches,
+			reportDate: result.reportDate,
 		}),
 	});
 	const data = await readResponse<{ archive: ArchiveSummary }>(response);
