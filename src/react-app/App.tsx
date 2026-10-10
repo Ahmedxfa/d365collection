@@ -33,7 +33,7 @@ const MIN_COLUMN_WIDTH = 80;
 const INITIAL_COLUMN_WIDTHS = [260, 145, 150, ...Array(9).fill(125), 145];
 const OVER_30_BUCKET_START = 5;
 const OVER_45_BUCKET_START = 7;
-const AGING_CHART_COLORS = ["#3d9272", "#59a78c", "#78b89f", "#96c8b2", "#b1d4c3", "#d1bb6c", "#d69a55", "#cc7654", "#a94f4f"];
+const AGING_CHART_COLORS = ["#3d9272", "#59a78c", "#78b89f", "#96c8b2", "#b1d4c3", "#e6c84f", "#efb83f", "#cc7654", "#a94f4f"];
 const COMMISSION_RATE = 0.01;
 const amountFormat = new Intl.NumberFormat("en-US", {
 	minimumFractionDigits: 2,
@@ -306,20 +306,6 @@ function App() {
 		};
 	}, []);
 
-	const ownerCounts = useMemo(() => {
-		const counts = new Map<string, number>();
-		for (const owner of OWNER_FILTERS) counts.set(owner.id, 0);
-		for (const customer of result?.rows ?? []) {
-			const ownerId = ownerForSegment(customer.segment);
-			if (ownerId) counts.set(ownerId, (counts.get(ownerId) ?? 0) + 1);
-		}
-		return counts;
-	}, [result]);
-	const otherSegmentCount = useMemo(
-		() => (result?.rows ?? []).filter((customer) => ownerForSegment(customer.segment) === null).length,
-		[result],
-	);
-
 	const selectedRows = useMemo(() => {
 		if (!result) return [];
 		return result.rows.filter((customer) => {
@@ -333,12 +319,6 @@ function App() {
 	const dashboardResult = comparison?.second ?? result;
 	const dashboardRows = useMemo(() => dashboardResult?.rows ?? [], [dashboardResult]);
 	const dashboardPreviousRows = comparison?.first.rows ?? previousSnapshot;
-	const dashboardPreviousDate = comparison
-		? comparison.first.reportDate
-		: previousSnapshotReportDate;
-	const dashboardPreviousCreatedAt = comparison
-		? comparison.first.createdAt
-		: previousSnapshotAt;
 
 	const representativeMetrics = useMemo<RepresentativeMetrics[]>(() => OWNER_FILTERS.map((owner) => {
 		const rows = dashboardRows.filter((customer) => ownerForSegment(customer.segment) === owner.id);
@@ -487,14 +467,11 @@ function App() {
 			return `${AGING_CHART_COLORS[activeBucketTotals.indexOf(bucket)]} ${startAngle}deg ${agingAngle}deg`;
 		}).join(", ")})`
 		: "conic-gradient(#e9efea 0deg 360deg)";
-	const maxRepresentativeBucket = Math.max(
+	const maxCustomerBucket = Math.max(
 		1,
-		...representativeMetrics.flatMap((owner) =>
-			(owner.rows[0]?.buckets ?? []).map((_, index) =>
-				owner.rows.reduce((sum, customer) => sum + Math.max(0, customer.buckets[index] ?? 0), 0),
-			),
-		),
+		...activeRepresentativeRows.flatMap((customer) => customer.buckets.map((amount) => Math.abs(amount))),
 	);
+	const activeHeatmapRows = [...activeRepresentativeRows].sort((first, second) => second.total - first.total);
 
 	const segments = useMemo(() => {
 		if (!result) return [];
@@ -900,14 +877,6 @@ function App() {
 					<strong>{isRestoring ? "جاري الاستعادة…" : formattedBalanceDate}</strong>
 				</div>
 			</header>
-			<div className="header-notice" role="status">
-				<span className="privacy-dot" />
-				{archiveStatus === "connected"
-					? "أرشيف Cloudflare مشترك للعامة: أي شخص معه الرابط يمكنه القراءة والرفع والحذف."
-					: archiveStatus === "checking"
-						? "جاري الاتصال بأرشيف Cloudflare…"
-						: "الأرشيف السحابي غير متاح؛ أي بيانات جديدة محفوظة محلياً فقط حتى عودة الاتصال."}
-			</div>
 			{isProcessing && (
 				<div className="status-message processing" role="status">
 					<i className="spinner" />
@@ -923,21 +892,7 @@ function App() {
 
 			<section className="sales-dashboard-hero" id="top" aria-labelledby="sales-dashboard-title">
 				<div className="sales-dashboard-heading">
-					<div>
-						<p className="section-kicker">مؤشرات المحافظ والتحصيل</p>
-						<h1 id="sales-dashboard-title">لوحة أداء المندوبين</h1>
-						<p>اختر المندوب لمراجعة حجم المحفظة، أعمار الأرصدة، واتجاه التغير مقارنة بالنسخة السابقة.</p>
-					</div>
-				</div>
-				<div className="dashboard-toolbar">
-					<div className="sales-update-chip">
-						<span className="privacy-dot" />
-						<span>{dashboardResult
-							? dashboardResult.reportDate
-								? `تاريخ الرصيد · ${formatReportDate(dashboardResult.reportDate)}`
-								: formatReportDate(dashboardResult.reportDate)
-							: "بانتظار أول تحديث"}</span>
-					</div>
+					<h1 id="sales-dashboard-title">لوحة تقييم الأداء</h1>
 					{archives.length > 0 && (
 						<div className="comparison-controls dashboard-comparison-controls">
 							<span className="comparison-strip-label">مقارنة:</span>
@@ -1039,17 +994,6 @@ function App() {
 						key={`${activeOwnerId}-${showOtherSegments}-${[...selectedOwners].sort().join(",")}`}
 						className="representative-view-transition"
 					>
-						<div className="representative-dashboard-heading">
-							<div>
-								<p className="panel-kicker">لوحة المندوب</p>
-								<h2>{activeRepresentativeName}</h2>
-							</div>
-							<span className="representative-comparison-note">
-								{dashboardPreviousCreatedAt
-									? `مقارنة مع ${formatReportDate(dashboardPreviousDate)}`
-									: "ارفع لقطة أخرى لإظهار اتجاه الأداء"}
-							</span>
-						</div>
 						<div className="rep-kpi-grid">
 							<article className="rep-kpi-card">
 								<span>إجمالي الرصيد</span>
@@ -1204,55 +1148,63 @@ function App() {
 						<article className="rep-chart-card rep-heatmap-card">
 							<div className="rep-chart-heading">
 								<div>
-									<h3>خريطة أعمار الأرصدة حسب المندوب</h3>
-								<p>قيمة كل فترة للمقارنة السريعة · الأخضر حتى 45 والأحمر +45</p>
+									<h3>خريطة أعمار العملاء · {activeRepresentativeName}</h3>
+									<p>العملاء مرتّبون حسب إجمالي الرصيد · الأخضر حتى 45 يوماً والأحمر فوق 45</p>
 								</div>
 							</div>
 							<div className="rep-heatmap-scroll">
 								<table className="rep-heatmap">
 									<thead>
 										<tr>
-											<th scope="col">المندوب</th>
+											<th scope="col">العميل / الحساب</th>
+											<th scope="col">السيجمينت</th>
 											{dashboardResult?.bucketNames.map((bucket, index) => (
 												<th scope="col" key={`${index}-${bucket}`}>{bucket}</th>
 											))}
-											<th scope="col">إجمالي +45</th>
+											<th scope="col">الإجمالي</th>
 										</tr>
 									</thead>
 									<tbody>
-										{representativeMetrics.map((owner) => (
-											<tr key={owner.id}>
-												<th scope="row">{owner.name}</th>
+										{activeHeatmapRows.map((customer) => (
+											<tr key={customer.account}>
+												<th scope="row">
+													<span className="rep-heatmap-customer-name">{customer.name || customer.account}</span>
+													<small>{customer.account}</small>
+												</th>
+												<td className="rep-heatmap-segment">{customer.segment}</td>
 												{dashboardResult?.bucketNames.map((bucket, index) => {
-													const amount = owner.rows.reduce((sum, customer) => sum + (customer.buckets[index] ?? 0), 0);
-													const intensity = Math.min(0.82, Math.max(0.08, Math.abs(amount) / maxRepresentativeBucket * 0.82));
+													const amount = customer.buckets[index] ?? 0;
+													const intensity = Math.min(0.82, Math.max(0.08, Math.abs(amount) / maxCustomerBucket * 0.82));
 													const riskCell = amount < 0 || index >= OVER_45_BUCKET_START;
+													const warningCell = index >= OVER_30_BUCKET_START && index < OVER_45_BUCKET_START;
 													return (
 														<td
-															key={`${owner.id}-${index}-${bucket}`}
-															className={riskCell ? "heat-risk" : ""}
-															style={{ backgroundColor: riskCell ? `rgba(169, 79, 79, ${intensity})` : `rgba(61, 146, 114, ${intensity})` }}
-															title={`${owner.name} · ${bucket}: ${formatAmount(amount)}`}
+															key={`${customer.account}-${index}-${bucket}`}
+															className={riskCell ? "heat-risk" : warningCell ? "heat-warning" : ""}
+															style={{ backgroundColor: riskCell
+																? `rgba(169, 79, 79, ${intensity})`
+																: warningCell
+																	? `rgba(230, 200, 79, ${intensity})`
+																	: `rgba(61, 146, 114, ${intensity})` }}
+															title={`${customer.name || customer.account} · ${bucket}: ${formatAmount(amount)}`}
 														>
 															{formatAmount(amount)}
 														</td>
 													);
 												})}
-												<td className="heat-total">{formatAmount(owner.over45)}</td>
+												<td className="heat-total">{formatAmount(customer.total)}</td>
 											</tr>
 										))}
+										{activeHeatmapRows.length === 0 && (
+											<tr><td className="rep-heatmap-empty" colSpan={(dashboardResult?.bucketNames.length ?? 0) + 3}>لا توجد حسابات لهذا الاختيار.</td></tr>
+										)}
 									</tbody>
 								</table>
 							</div>
+							<p className="rep-chart-footnote">{activeHeatmapRows.length} حساب · اضغط على مندوب آخر لعرض عملائه.</p>
 						</article>
 					</div>
-				) : (
-					<div className="rep-dashboard-empty">
-						<div className="rep-empty-icon">↥</div>
-						<h2>ارفع الملفات لبدء لوحة أداء المندوبين</h2>
-						<p>اختر ملفي الفترات وملف السيجمينت من الشريط العلوي؛ ستظهر هنا المحافظ ومؤشرات أعمار الدين.</p>
-					</div>
-				)}
+				) : null}
 			</section>
 
 			{result && (
@@ -1355,89 +1307,6 @@ function App() {
 								</div>
 							</div>
 						)}
-					</section>
-
-					<section className="owner-filter-panel" aria-labelledby="owner-filter-title">
-						<div className="owner-filter-heading">
-							<div>
-								<p className="panel-kicker">إظهار الحسابات التابعة لـ</p>
-								<h3 id="owner-filter-title">اختيار الأشخاص المهمين</h3>
-							</div>
-							<div className="owner-filter-actions">
-								<button
-									type="button"
-									onClick={() => {
-										setActiveOwnerId("all");
-										setSelectedOwners(new Set(OWNER_FILTERS.map((owner) => owner.id)));
-										setShowOtherSegments(false);
-										setPage(1);
-									}}
-								>
-									المندوبون الستة فقط
-								</button>
-								<button
-									type="button"
-									onClick={() => {
-										setActiveOwnerId("all");
-										setSelectedOwners(new Set(OWNER_FILTERS.map((owner) => owner.id)));
-										setShowOtherSegments(true);
-										setPage(1);
-									}}
-								>
-									مع باقي الفروع
-								</button>
-							</div>
-						</div>
-						<div className="owner-checkbox-grid">
-							{OWNER_FILTERS.map((owner) => {
-								const checked = selectedOwners.has(owner.id);
-								const count = ownerCounts.get(owner.id) ?? 0;
-								return (
-									<label className={`owner-checkbox${checked ? " checked" : ""}`} key={owner.id}>
-										<input
-											type="checkbox"
-											checked={checked}
-											onChange={(event) => {
-												setActiveOwnerId("all");
-												setSelectedOwners((current) => {
-													const next = new Set(current);
-													if (event.target.checked) next.add(owner.id);
-													else next.delete(owner.id);
-													return next;
-												});
-												setSegmentFilter("all");
-												setPage(1);
-											}}
-										/>
-										<span className="custom-checkbox" aria-hidden="true">{checked ? "✓" : ""}</span>
-										<span className="owner-checkbox-label">
-											<strong>{owner.name}</strong>
-											<small>{count > 0 ? `${count} حساب` : "غير موجود في ملف السيجمينت"}</small>
-										</span>
-									</label>
-								);
-							})}
-							<label className={`owner-checkbox other-owner-checkbox${showOtherSegments ? " checked" : ""}`}>
-								<input
-									type="checkbox"
-									checked={showOtherSegments}
-									onChange={(event) => {
-										setActiveOwnerId("all");
-										setShowOtherSegments(event.target.checked);
-										setSegmentFilter("all");
-										setPage(1);
-									}}
-								/>
-								<span className="custom-checkbox" aria-hidden="true">{showOtherSegments ? "✓" : ""}</span>
-								<span className="owner-checkbox-label">
-									<strong>بقية السيجمينتات</strong>
-									<small>{otherSegmentCount} حساب</small>
-								</span>
-							</label>
-						</div>
-						<div className="owner-filter-footer" role="status">
-							<span>ظاهر: {selectedRows.length} من {result.rows.length} حساب</span>
-						</div>
 					</section>
 
 					<div className="metric-grid">
@@ -1582,7 +1451,7 @@ function App() {
 										</div>
 										<div className="bar-track">
 											<div
-												className={`bar-fill age-fill segment-color-${index % 5}`}
+												className={`bar-fill age-fill segment-color-${index % 5}${index >= OVER_30_BUCKET_START && index < OVER_45_BUCKET_START ? ` aging-warning-${index}` : ""}`}
 												style={{ width: `${Math.max(0, (bucket.amount / Math.max(maxBucket, 1)) * 100)}%` }}
 											/>
 										</div>
