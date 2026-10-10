@@ -210,8 +210,6 @@ function App() {
 	const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
 	const [currentArchiveId, setCurrentArchiveId] = useState<string | null>(null);
 	const [previousSnapshot, setPreviousSnapshot] = useState<ProcessingResult["rows"] | null>(null);
-	const [previousSnapshotAt, setPreviousSnapshotAt] = useState<string | null>(null);
-	const [previousSnapshotReportDate, setPreviousSnapshotReportDate] = useState<string | null>(null);
 	const [historySnapshots, setHistorySnapshots] = useState<ArchiveSnapshotRows[]>([]);
 	const [archives, setArchives] = useState<ArchiveSummary[]>([]);
 	const [archiveStatus, setArchiveStatus] = useState<"checking" | "connected" | "local">("checking");
@@ -252,8 +250,6 @@ function App() {
 					setLastUpdatedAt(latest.createdAt);
 					setCurrentArchiveId(latest.id);
 					setPreviousSnapshot(previous?.rows ?? null);
-					setPreviousSnapshotAt(previous?.createdAt ?? null);
-					setPreviousSnapshotReportDate(previous?.reportDate ?? null);
 					setHistorySnapshots(history.map(({ id, createdAt, reportDate, rows }) => ({ id, createdAt, reportDate, rows })));
 					setSelectedOwners(new Set(OWNER_FILTERS.map((owner) => owner.id)));
 					setShowOtherSegments(false);
@@ -430,17 +426,6 @@ function App() {
 			sumBucketsFrom(customer, OVER_30_BUCKET_START),
 		]),
 	);
-	const previousOver45ByAccount = new Map(
-		previousRowsForActive.map((customer) => [
-			customer.account,
-			sumBucketsFrom(customer, OVER_45_BUCKET_START),
-		]),
-	);
-	const activeReducedOver45Count = activeRepresentativeRows.filter((customer) => {
-		const previousOver45 = previousOver45ByAccount.get(customer.account);
-		return previousOver45 !== undefined &&
-			sumBucketsFrom(customer, OVER_45_BUCKET_START) < previousOver45;
-	}).length;
 	const activeNewlyOver30Rows = activeRepresentativeRows.filter((customer) =>
 		(previous30PlusByAccount.get(customer.account) ?? 0) <= 0 &&
 		sumBucketsFrom(customer, OVER_30_BUCKET_START) > 0,
@@ -499,37 +484,6 @@ function App() {
 		() => selectedRows.reduce((sum, customer) => sum + customer.total, 0),
 		[selectedRows],
 	);
-	const selectedOver45 = useMemo(
-		() => selectedRows.reduce((sum, customer) => sum + sumBucketsFrom(customer, OVER_45_BUCKET_START), 0),
-		[selectedRows],
-	);
-	const priorityAccounts = useMemo(() => {
-		const previousByAccount = new Map(
-			(previousSnapshot ?? []).map((customer) => [
-				customer.account,
-				sumBucketsFrom(customer, OVER_45_BUCKET_START),
-			]),
-		);
-		return selectedRows
-			.map((customer) => {
-				return {
-					over30: sumBucketsFrom(customer, OVER_30_BUCKET_START),
-					over45: sumBucketsFrom(customer, OVER_45_BUCKET_START),
-					previousOver45: previousByAccount.get(customer.account) ?? null,
-				};
-			})
-			.filter((customer) => customer.over30 > 0 || customer.over45 > 0)
-			.sort((first, second) => second.over45 - first.over45);
-	}, [previousSnapshot, selectedRows]);
-	const topPriorityAccounts = priorityAccounts.slice(0, 10);
-	const topPriorityOver45 = topPriorityAccounts.reduce((sum, customer) => sum + customer.over45, 0);
-	const newlyOver45Count = priorityAccounts.filter(
-		(customer) => customer.previousOver45 !== null && customer.previousOver45 === 0 && customer.over45 > 0,
-	).length;
-	const increasedOver45Count = priorityAccounts.filter(
-		(customer) => customer.previousOver45 !== null && customer.over45 > customer.previousOver45,
-	).length;
-
 	function selectRepresentative(ownerId: string): void {
 		setActiveOwnerId(ownerId);
 		if (ownerId === "all") {
@@ -573,8 +527,6 @@ function App() {
 				const updatedAt = new Date().toISOString();
 				if (result) {
 					setPreviousSnapshot(result.rows);
-					setPreviousSnapshotAt(lastUpdatedAt);
-					setPreviousSnapshotReportDate(result.reportDate ?? null);
 				}
 				setResult(processed);
 				setLastUpdatedAt(updatedAt);
@@ -643,13 +595,10 @@ function App() {
 					setResult(latest);
 					setLastUpdatedAt(latest.createdAt);
 					setPreviousSnapshot(previous?.rows ?? null);
-					setPreviousSnapshotAt(previous?.createdAt ?? null);
-					setPreviousSnapshotReportDate(previous?.reportDate ?? null);
 				} else {
 					setResult(null);
 					setLastUpdatedAt(null);
 					setPreviousSnapshot(null);
-					setPreviousSnapshotAt(null);
 				}
 			}
 			setSelectedArchiveIds([remaining[1]?.id ?? "", remaining[0]?.id ?? ""]);
@@ -1031,21 +980,7 @@ function App() {
 								)) : <p className="rep-chart-empty">لا توجد متأخرات +45 لدى هذا المندوب.</p>}
 								<p className="rep-chart-footnote">أعلى 5 حسابات تشكل {formatPercent(topFiveOver45, activeOver45Total)} من إجمالي +45.</p>
 							</article>
-							<article className="rep-chart-card">
-								<div className="rep-chart-heading">
-									<div>
-										<h3>نبض المحفظة</h3>
-										<p>إشارات متابعة تساعد على ترتيب يوم المندوب</p>
-									</div>
-								</div>
-								<div className="rep-signal-list">
-									<div><span>حسابات عليها رصيد +45</span><strong>{activeRepresentativeRows.filter((customer) => sumBucketsFrom(customer, OVER_45_BUCKET_START) > 0).length}</strong></div>
-									<div className="signal-improved"><span>انخفض رصيد +45 عن فترة الأساس</span><strong>{dashboardPreviousRows ? activeReducedOver45Count : "—"}</strong></div>
-								</div>
-							</article>
-						</div>
-						<div className="chart-grid">
-							<article className="panel age-panel">
+							<article className="rep-chart-card panel age-panel">
 								<div className="panel-heading">
 									<div>
 										<p className="panel-kicker">مجموع الأرصدة حسب الفترات</p>
@@ -1074,7 +1009,8 @@ function App() {
 									<strong>{formatAmount(activeRepresentativeTotal)}</strong>
 								</div>
 							</article>
-
+						</div>
+						<div className="chart-grid rep-segment-distribution">
 							<article className="panel segment-panel">
 								<div className="panel-heading">
 									<div>
@@ -1303,37 +1239,6 @@ function App() {
 								</div>
 							</div>
 						)}
-					</section>
-
-					<section className="panel collection-priority-panel" aria-labelledby="collection-priority-title">
-						<div className="panel-heading">
-							<div>
-								<p className="panel-kicker">ابدأ بالحسابات الأعلى تأثيراً</p>
-								<h3 id="collection-priority-title">أولويات التحصيل حسب الرصيد المتأخر</h3>
-							</div>
-							<span className="panel-period">
-								{previousSnapshotAt
-									? `التغير مقابل ${formatReportDate(previousSnapshotReportDate)}`
-									: "لا توجد نسخة سابقة لقياس التغير"}
-							</span>
-						</div>
-						<div className="priority-insights" aria-live="polite">
-							<div>
-								<span>حصة أعلى 10 حسابات من +45</span>
-								<strong>{formatPercent(topPriorityOver45, selectedOver45)}</strong>
-								<small>{formatAmount(topPriorityOver45)} من {formatAmount(selectedOver45)}</small>
-							</div>
-							<div>
-								<span>حسابات دخلت +45 منذ النسخة السابقة</span>
-								<strong>{previousSnapshot ? newlyOver45Count : "—"}</strong>
-								<small>{previousSnapshot ? "تستحق متابعة مبكرة" : "ارفع تحديثاً آخر لبدء المقارنة"}</small>
-							</div>
-							<div>
-								<span>حسابات ارتفع لديها رصيد +45</span>
-								<strong>{previousSnapshot ? increasedOver45Count : "—"}</strong>
-								<small>{previousSnapshot ? "مقارنة بالقطة السابقة" : "لا يوجد خط أساس بعد"}</small>
-							</div>
-						</div>
 					</section>
 
 					<div className="result-note">

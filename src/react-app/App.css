@@ -862,34 +862,6 @@
 	font-size: 8px;
 }
 
-.rep-signal-list {
-	display: grid;
-	gap: 0;
-	margin-top: 9px;
-}
-
-.rep-signal-list > div {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 10px;
-	padding: 9px 0;
-	border-bottom: 1px solid #eff2ef;
-	color: #76847c;
-	font-size: 8px;
-}
-
-.rep-signal-list > div:last-child {
-	border-bottom: 0;
-}
-
-.rep-signal-list strong {
-	color: #36564a;
-	font-size: 10px;
-	font-variant-numeric: tabular-nums;
-	direction: ltr;
-}
-
 .rep-chart-empty {
 	margin: 25px 0;
 	color: #929d96;
@@ -1023,14 +995,6 @@
 	gap: 8px;
 	padding: 10px 4px 0;
 	border-bottom: 1px solid #edf0ed;
-}
-
-.rep-signal-list > div.signal-worsened strong {
-	color: #a5523d;
-}
-
-.rep-signal-list > div.signal-improved strong {
-	color: #277a61;
 }
 
 .art-chart span {
@@ -1539,6 +1503,10 @@
 	margin-top: 15px;
 }
 
+.chart-grid.rep-segment-distribution {
+	grid-template-columns: minmax(0, 1fr);
+}
+
 .panel {
 	border: 1px solid #e7ece8;
 	border-radius: 11px;
@@ -1868,51 +1836,6 @@
 	background: #f6f8f5;
 	color: #77857f;
 	text-align: right;
-}
-
-.collection-priority-panel {
-	margin-top: 15px;
-	padding: 18px 20px 14px;
-}
-
-.collection-priority-panel .panel-heading {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 12px;
-}
-
-.priority-insights {
-	display: grid;
-	grid-template-columns: repeat(3, minmax(0, 1fr));
-	gap: 9px;
-	margin: 14px 0;
-}
-
-.priority-insights > div {
-	min-width: 0;
-	display: grid;
-	gap: 5px;
-	padding: 10px 12px;
-	border: 1px solid #e9eee8;
-	border-radius: 7px;
-	background: #fafcf9;
-}
-
-.priority-insights span {
-	color: #718078;
-	font-size: 9px;
-}
-
-.priority-insights strong {
-	color: #24483d;
-	font-size: 17px;
-	font-variant-numeric: tabular-nums;
-}
-
-.priority-insights small {
-	color: #97a19c;
-	font-size: 8px;
 }
 
 .archive-panel > .panel-heading > .button {
@@ -2525,20 +2448,6 @@ td:first-child {
 	.archive-panel .panel-heading {
 		align-items: flex-start;
 		flex-direction: column;
-	}
-
-	.collection-priority-panel {
-		padding: 15px 12px 12px;
-	}
-
-	.collection-priority-panel .panel-heading {
-		align-items: flex-start;
-		flex-direction: column;
-	}
-
-	.priority-insights {
-		grid-template-columns: 1fr;
-		gap: 6px;
 	}
 
 	.comparison-controls {
