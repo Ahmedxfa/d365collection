@@ -72,6 +72,16 @@ interface ArchiveSnapshotRows {
 	rows: ProcessingResult["rows"];
 }
 
+function archivedResult(dataset: ArchivedDataset): ProcessingResult {
+	return {
+		bucketNames: dataset.bucketNames,
+		rows: dataset.rows,
+		total: dataset.total,
+		segmentMatches: dataset.segmentMatches,
+		reportDate: dataset.reportDate ?? "",
+	};
+}
+
 interface RepresentativeMetrics {
 	id: string;
 	name: string;
@@ -538,7 +548,7 @@ function App() {
 					if (!isCurrent) return;
 					const latest = history[0];
 					const previous = history[1] ?? null;
-					setResult(latest);
+					setResult(archivedResult(latest));
 					setLastUpdatedAt(latest.createdAt);
 					setCurrentArchiveId(latest.id);
 					setPreviousSnapshot(previous?.rows ?? null);
@@ -628,7 +638,7 @@ function App() {
 				const latest = rangedSnapshots[0];
 				const previous = loadedSnapshots.find((snapshot) => snapshot.id === previousArchive?.id) ?? null;
 				if (!latest) throw new Error("لم يتم العثور على بيانات ضمن النطاق الزمني المختار.");
-				setResult(latest);
+				setResult(archivedResult(latest));
 				setCurrentArchiveId(latest.id);
 				setLastUpdatedAt(latest.createdAt);
 				setPreviousSnapshot(previous?.rows ?? null);
@@ -968,7 +978,7 @@ function App() {
 			if (currentRun === runId.current) {
 				const updatedAt = new Date().toISOString();
 				const processedBalanceDate = processed.reportDate ?? updatedAt.slice(0, 10);
-				const currentBalanceDate = result?.reportDate ?? lastUpdatedAt?.slice(0, 10) ?? "";
+				const currentBalanceDate = result?.reportDate || lastUpdatedAt?.slice(0, 10) || "";
 				if (!result || processedBalanceDate >= currentBalanceDate) {
 					setResult(processed);
 					setLastUpdatedAt(updatedAt);
@@ -983,7 +993,8 @@ function App() {
 					const latestPair = await loadLatestArchivePair(nextArchives);
 					if (!latestPair) throw new Error("تعذر تحديد أحدث نسخة بعد الحفظ.");
 					const { latest, previous } = latestPair;
-					setResult(latest);
+					const latestResult = archivedResult(latest);
+					setResult(latestResult);
 					setPreviousSnapshot(previous?.rows ?? null);
 					setCurrentArchiveId(latest.id);
 					setLastUpdatedAt(latest.createdAt);
@@ -1004,7 +1015,7 @@ function App() {
 						...current.filter((snapshot) => snapshot.id !== latest.id && snapshot.id !== previous?.id),
 					].sort(compareByBalanceDate).slice(0, TREND_SNAPSHOT_LIMIT));
 					setSelectedArchiveIds([previous?.id ?? "", latest.id]);
-					await saveDashboard({ result: latest, updatedAt: latest.createdAt });
+					await saveDashboard({ result: latestResult, updatedAt: latest.createdAt });
 					setArchiveStatus("connected");
 					setError("");
 				} catch (storageError) {
@@ -1043,7 +1054,8 @@ function App() {
 			if (!latestPair) throw new Error("تعذر تحديد أحدث نسخة بعد النشر.");
 			const { latest, previous } = latestPair;
 			setArchives(nextArchives);
-			setResult(latest);
+			const latestResult = archivedResult(latest);
+			setResult(latestResult);
 			setPreviousSnapshot(previous?.rows ?? null);
 			setCurrentArchiveId(latest.id);
 			setLastUpdatedAt(latest.createdAt);
@@ -1064,7 +1076,7 @@ function App() {
 				...current.filter((snapshot) => snapshot.id !== latest.id && snapshot.id !== previous?.id),
 			].sort(compareByBalanceDate).slice(0, TREND_SNAPSHOT_LIMIT));
 			setComparison(null);
-			await saveDashboard({ result: latest, updatedAt: latest.createdAt });
+			await saveDashboard({ result: latestResult, updatedAt: latest.createdAt });
 			setArchiveStatus("connected");
 			setError("");
 		} catch (archiveError) {
@@ -1083,12 +1095,13 @@ function App() {
 			const latestPair = await loadLatestArchivePair(remaining);
 			if (latestPair) {
 				const { latest, previous } = latestPair;
-				setResult(latest);
+				const latestResult = archivedResult(latest);
+				setResult(latestResult);
 				setCurrentArchiveId(latest.id);
 				setLastUpdatedAt(latest.createdAt);
 				setPreviousSnapshot(previous?.rows ?? null);
 				setSelectedArchiveIds([previous?.id ?? "", latest.id]);
-				await saveDashboard({ result: latest, updatedAt: latest.createdAt });
+				await saveDashboard({ result: latestResult, updatedAt: latest.createdAt });
 			} else {
 				setResult(null);
 				setCurrentArchiveId(null);
