@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from "react";
 import { createExcelFile } from "./excel-export";
 import { processFiles, type ProcessingResult } from "./processor";
 import { loadSavedDashboard, saveDashboard } from "./dashboard-storage";
@@ -86,7 +86,165 @@ interface RepresentativeMetrics {
 	changePercent: number | null;
 }
 
+type DateRangePreset = "today" | "yesterday" | "last-7-days" | "last-30-days" | "last-12-months" | "custom";
+type DateRange = { start: string; end: string };
+type RepresentativeComparisonMetric = "balance" | "over30" | "over45" | "commission";
+type DashboardWidgetId =
+	| "kpi-total"
+	| "kpi-under21"
+	| "kpi-under30"
+	| "kpi-30-45"
+	| "kpi-over45"
+	| "kpi-commission"
+	| "trend"
+	| "aging-pie"
+	| "owner-comparison"
+	| "balance-distribution"
+	| "over45-concentration"
+	| "owner-balances"
+	| "heatmap";
+
 const TREND_SNAPSHOT_LIMIT = 12;
+const REPRESENTATIVE_COMPARISON_COLORS = ["#176f5e", "#d47a32"];
+const DASHBOARD_WIDGET_STORAGE_KEY = "mizan-dashboard-widgets-v1";
+const DASHBOARD_WIDGET_ORDER_STORAGE_KEY = "mizan-dashboard-widget-order-v1";
+const DEFAULT_VISIBLE_WIDGETS: Record<DashboardWidgetId, boolean> = {
+	"kpi-total": true,
+	"kpi-under21": true,
+	"kpi-under30": true,
+	"kpi-30-45": true,
+	"kpi-over45": true,
+	"kpi-commission": true,
+	trend: true,
+	"aging-pie": true,
+	"owner-comparison": true,
+	"balance-distribution": true,
+	"over45-concentration": true,
+	"owner-balances": true,
+	heatmap: true,
+};
+const DASHBOARD_WIDGET_GROUPS: {
+	title: string;
+	items: { id: DashboardWidgetId; label: string }[];
+}[] = [
+	{
+		title: "بطاقات المؤشرات",
+		items: [
+			{ id: "kpi-total", label: "إجمالي الرصيد" },
+			{ id: "kpi-under21", label: "الرصيد حتى 21 يوماً" },
+			{ id: "kpi-under30", label: "الرصيد حتى 30 يوماً" },
+			{ id: "kpi-30-45", label: "الرصيد بين 30–45 يوماً" },
+			{ id: "kpi-over45", label: "الرصيد فوق 45 يوماً" },
+			{ id: "kpi-commission", label: "العمولة التقديرية على +45" },
+		],
+	},
+	{
+		title: "الرسوم والتحليلات",
+		items: [
+			{ id: "trend", label: "مخطط خطي لاتجاه الرصيد" },
+			{ id: "aging-pie", label: "مخطط دائري لتوزيع الفترات" },
+			{ id: "owner-comparison", label: "مخطط مقارنة مندوبين" },
+			{ id: "balance-distribution", label: "توزيع الرصيد حسب الفترات" },
+			{ id: "over45-concentration", label: "تركيز متأخرات +45" },
+			{ id: "owner-balances", label: "الرصيد حسب المندوب" },
+			{ id: "heatmap", label: "الخريطة الحرارية" },
+		],
+	},
+];
+const DASHBOARD_WIDGET_IDS = DASHBOARD_WIDGET_GROUPS.flatMap((group) => group.items.map(({ id }) => id));
+
+function isDateRangePreset(value: string): value is DateRangePreset {
+	return value === "today" || value === "yesterday" || value === "last-7-days" ||
+		value === "last-30-days" || value === "last-12-months" || value === "custom";
+}
+
+function isRepresentativeComparisonMetric(value: string): value is RepresentativeComparisonMetric {
+	return value === "balance" || value === "over30" || value === "over45" || value === "commission";
+}
+
+function isDashboardWidgetId(value: string): value is DashboardWidgetId {
+	return DASHBOARD_WIDGET_IDS.some((id) => id === value);
+}
+
+function readDashboardWidgetPreferences(): Record<DashboardWidgetId, boolean> {
+	const saved = window.localStorage.getItem(DASHBOARD_WIDGET_STORAGE_KEY);
+	if (!saved) return { ...DEFAULT_VISIBLE_WIDGETS };
+	const parsed: unknown = JSON.parse(saved);
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+		throw new Error("تعذر قراءة تفضيلات تخصيص لوحة البيانات.");
+	}
+	const preferences = { ...DEFAULT_VISIBLE_WIDGETS };
+	for (const group of DASHBOARD_WIDGET_GROUPS) {
+		for (const { id } of group.items) {
+			const value = (parsed as Record<string, unknown>)[id];
+			if (value !== undefined && typeof value !== "boolean") {
+				throw new Error("تفضيلات تخصيص لوحة البيانات غير صالحة.");
+			}
+			if (typeof value === "boolean") preferences[id] = value;
+		}
+	}
+	return preferences;
+}
+
+function readDashboardWidgetOrder(): DashboardWidgetId[] {
+	const saved = window.localStorage.getItem(DASHBOARD_WIDGET_ORDER_STORAGE_KEY);
+	if (!saved) return [...DASHBOARD_WIDGET_IDS];
+	const parsed: unknown = JSON.parse(saved);
+	if (!Array.isArray(parsed) || parsed.some((id) => typeof id !== "string")) {
+		throw new Error("تعذر قراءة ترتيب عناصر لوحة البيانات.");
+	}
+	const savedIds = parsed.filter((id): id is DashboardWidgetId => typeof id === "string" && isDashboardWidgetId(id));
+	return [...new Set([...savedIds, ...DASHBOARD_WIDGET_IDS])];
+}
+
+function toDateInputValue(date: Date): string {
+	const year = date.getFullYear();
+	const month = String(date.getMonth() + 1).padStart(2, "0");
+	const day = String(date.getDate()).padStart(2, "0");
+	return `${year}-${month}-${day}`;
+}
+
+function getDateRange(preset: Exclude<DateRangePreset, "custom">, today = new Date()): DateRange {
+	const end = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+	const start = new Date(end);
+	switch (preset) {
+		case "yesterday":
+			start.setDate(start.getDate() - 1);
+			end.setDate(end.getDate() - 1);
+			break;
+		case "last-7-days":
+			start.setDate(start.getDate() - 6);
+			break;
+		case "last-30-days":
+			start.setDate(start.getDate() - 29);
+			break;
+		case "last-12-months":
+			start.setFullYear(start.getFullYear() - 1);
+			break;
+		case "today":
+			break;
+	}
+	return { start: toDateInputValue(start), end: toDateInputValue(end) };
+}
+
+function valueForRepresentativeMetric(
+	rows: ProcessingResult["rows"],
+	ownerId: string,
+	metric: RepresentativeComparisonMetric,
+): number {
+	const representativeRows = rows.filter((customer) => ownerForSegment(customer.segment) === ownerId);
+	switch (metric) {
+		case "balance":
+			return totalBalance(representativeRows);
+		case "over30":
+			return representativeRows.reduce((sum, customer) => sum + sumBucketsFrom(customer, OVER_30_BUCKET_START), 0);
+		case "over45": {
+			return representativeRows.reduce((sum, customer) => sum + sumBucketsFrom(customer, OVER_45_BUCKET_START), 0);
+		}
+		case "commission":
+			return representativeRows.reduce((sum, customer) => sum + sumBucketsFrom(customer, OVER_45_BUCKET_START) * COMMISSION_RATE, 0);
+	}
+}
 
 function normalizeArabicName(value: string): string {
 	return value
@@ -132,9 +290,24 @@ function archiveOptionLabel(archive: ArchiveSummary): string {
 	return formatReportDate(archive.reportDate);
 }
 
-function compareArchivesByBalanceDate(first: ArchiveSummary, second: ArchiveSummary): number {
+function compareByBalanceDate(
+	first: Pick<ArchiveSummary, "reportDate" | "createdAt">,
+	second: Pick<ArchiveSummary, "reportDate" | "createdAt">,
+): number {
 	return (second.reportDate ?? second.createdAt.slice(0, 10)).localeCompare(first.reportDate ?? first.createdAt.slice(0, 10)) ||
 		second.createdAt.localeCompare(first.createdAt);
+}
+
+async function loadLatestArchivePair(archiveList: ArchiveSummary[]): Promise<{
+	latest: ArchivedDataset;
+	previous: ArchivedDataset | null;
+} | null> {
+	if (archiveList.length === 0) return null;
+	const [latest, previous] = await Promise.all([
+		loadArchive(archiveList[0].id),
+		archiveList[1] ? loadArchive(archiveList[1].id) : Promise.resolve(null),
+	]);
+	return { latest, previous };
 }
 
 function sumBucketsFrom(customer: ProcessingResult["rows"][number], startIndex: number): number {
@@ -214,9 +387,26 @@ function App() {
 	const [archives, setArchives] = useState<ArchiveSummary[]>([]);
 	const [archiveStatus, setArchiveStatus] = useState<"checking" | "connected" | "local">("checking");
 	const [selectedArchiveIds, setSelectedArchiveIds] = useState<[string, string]>(["", ""]);
+	const [dateRangePreset, setDateRangePreset] = useState<DateRangePreset>("last-12-months");
+	const [appliedDateRange, setAppliedDateRange] = useState<DateRange>(() => getDateRange("last-12-months"));
+	const [customDateRange, setCustomDateRange] = useState<DateRange>(() => getDateRange("last-12-months"));
+	const [isDateRangeLoading, setIsDateRangeLoading] = useState(false);
+	const [comparisonOwnerIds, setComparisonOwnerIds] = useState<[string, string]>([
+		OWNER_FILTERS[0].id,
+		OWNER_FILTERS[1].id,
+	]);
+	const [representativeComparisonMetric, setRepresentativeComparisonMetric] =
+		useState<RepresentativeComparisonMetric>("balance");
+	const [visibleWidgets, setVisibleWidgets] = useState<Record<DashboardWidgetId, boolean>>(
+		() => ({ ...DEFAULT_VISIBLE_WIDGETS }),
+	);
+	const [widgetOrder, setWidgetOrder] = useState<DashboardWidgetId[]>(() => [...DASHBOARD_WIDGET_IDS]);
+	const [draggedWidgetId, setDraggedWidgetId] = useState<DashboardWidgetId | null>(null);
+	const [isWidgetSettingsOpen, setIsWidgetSettingsOpen] = useState(false);
 	const [comparison, setComparison] = useState<{
 		first: ArchivedDataset;
 		second: ArchivedDataset;
+		trendSnapshots: ArchiveSnapshotRows[];
 		rows: SegmentComparison[];
 	} | null>(null);
 	const [isComparing, setIsComparing] = useState(false);
@@ -230,6 +420,92 @@ function App() {
 	const [showOtherSegments, setShowOtherSegments] = useState(false);
 	const [heatmapSort, setHeatmapSort] = useState<HeatmapSort>({ column: "total", direction: "desc" });
 	const runId = useRef(0);
+	const dateRangeRequestId = useRef(0);
+
+	useEffect(() => {
+		try {
+			setVisibleWidgets(readDashboardWidgetPreferences());
+			setWidgetOrder(readDashboardWidgetOrder());
+		} catch (preferenceError) {
+			setError(`تعذر تحميل تفضيلات تخصيص اللوحة: ${preferenceError instanceof Error ? preferenceError.message : "خطأ غير معروف."}`);
+		}
+	}, []);
+
+	function updateWidgetVisibility(widgetId: DashboardWidgetId, visible: boolean): void {
+		const updated = { ...visibleWidgets, [widgetId]: visible };
+		setVisibleWidgets(updated);
+		try {
+			window.localStorage.setItem(DASHBOARD_WIDGET_STORAGE_KEY, JSON.stringify(updated));
+			setError("");
+		} catch (preferenceError) {
+			setError(`تعذر حفظ تفضيلات تخصيص اللوحة على هذا الجهاز: ${preferenceError instanceof Error ? preferenceError.message : "خطأ غير معروف."}`);
+		}
+	}
+
+	function resetWidgetVisibility(): void {
+		const defaults = { ...DEFAULT_VISIBLE_WIDGETS };
+		setVisibleWidgets(defaults);
+		try {
+			window.localStorage.setItem(DASHBOARD_WIDGET_STORAGE_KEY, JSON.stringify(defaults));
+			setError("");
+		} catch (preferenceError) {
+			setError(`تعذر حفظ تفضيلات تخصيص اللوحة على هذا الجهاز: ${preferenceError instanceof Error ? preferenceError.message : "خطأ غير معروف."}`);
+		}
+	}
+
+	function resetWidgetOrder(): void {
+		const defaultOrder = [...DASHBOARD_WIDGET_IDS];
+		setWidgetOrder(defaultOrder);
+		try {
+			window.localStorage.setItem(DASHBOARD_WIDGET_ORDER_STORAGE_KEY, JSON.stringify(defaultOrder));
+			setError("");
+		} catch (preferenceError) {
+			setError(`تعذر حفظ ترتيب عناصر اللوحة على هذا الجهاز: ${preferenceError instanceof Error ? preferenceError.message : "خطأ غير معروف."}`);
+		}
+	}
+
+	function updateWidgetOrder(sourceId: DashboardWidgetId, targetId: DashboardWidgetId): void {
+		if (sourceId === targetId) return;
+		const nextOrder = [...widgetOrder];
+		const sourceIndex = nextOrder.indexOf(sourceId);
+		const targetIndex = nextOrder.indexOf(targetId);
+		if (sourceIndex < 0 || targetIndex < 0) return;
+		nextOrder.splice(sourceIndex, 1);
+		nextOrder.splice(targetIndex, 0, sourceId);
+		setWidgetOrder(nextOrder);
+		try {
+			window.localStorage.setItem(DASHBOARD_WIDGET_ORDER_STORAGE_KEY, JSON.stringify(nextOrder));
+			setError("");
+		} catch (preferenceError) {
+			setError(`تعذر حفظ ترتيب عناصر اللوحة على هذا الجهاز: ${preferenceError instanceof Error ? preferenceError.message : "خطأ غير معروف."}`);
+		}
+	}
+
+	function widgetDragProps(widgetId: DashboardWidgetId) {
+		return {
+			"data-dashboard-widget": widgetId,
+			draggable: true,
+			style: { order: widgetOrder.indexOf(widgetId) },
+			onDragStart: (event: DragEvent<HTMLElement>) => {
+				setDraggedWidgetId(widgetId);
+				event.dataTransfer.effectAllowed = "move";
+				event.dataTransfer.setData("text/plain", widgetId);
+			},
+			onDragEnd: () => setDraggedWidgetId(null),
+			onDragOver: (event: DragEvent<HTMLElement>) => {
+				if (draggedWidgetId && draggedWidgetId !== widgetId) {
+					event.preventDefault();
+					event.dataTransfer.dropEffect = "move";
+				}
+			},
+			onDrop: (event: DragEvent<HTMLElement>) => {
+				event.preventDefault();
+				const sourceId = event.dataTransfer.getData("text/plain") || draggedWidgetId;
+				if (sourceId && isDashboardWidgetId(sourceId)) updateWidgetOrder(sourceId, widgetId);
+				setDraggedWidgetId(null);
+			},
+		};
+	}
 
 	useEffect(() => {
 		let isCurrent = true;
@@ -290,6 +566,117 @@ function App() {
 		};
 	}, []);
 
+	const dateRangeArchives = useMemo(
+		() => archives.filter((archive) =>
+			archive.reportDate !== null &&
+			archive.reportDate >= appliedDateRange.start &&
+			archive.reportDate <= appliedDateRange.end,
+		),
+		[archives, appliedDateRange],
+	);
+
+	useEffect(() => {
+		if (archives.length === 0) return;
+		const requestId = ++dateRangeRequestId.current;
+		let isCurrent = true;
+		setIsDateRangeLoading(true);
+		setResult(null);
+		setCurrentArchiveId(null);
+		setLastUpdatedAt(null);
+		setPreviousSnapshot(null);
+		setHistorySnapshots([]);
+		setComparison(null);
+		setSelectedArchiveIds(["", ""]);
+
+		if (dateRangeArchives.length === 0) {
+			setIsDateRangeLoading(false);
+			return () => {
+				isCurrent = false;
+			};
+		}
+
+		void (async () => {
+			try {
+				const latestArchive = dateRangeArchives[0];
+				const latestArchiveIndex = archives.findIndex((archive) => archive.id === latestArchive.id);
+				const previousArchive = archives[latestArchiveIndex + 1];
+				const snapshotsToLoad = dateRangeArchives.map((archive) => loadArchive(archive.id));
+				if (previousArchive && !dateRangeArchives.some((archive) => archive.id === previousArchive.id)) {
+					snapshotsToLoad.push(loadArchive(previousArchive.id));
+				}
+				const loadedSnapshots = await Promise.all(snapshotsToLoad);
+				if (!isCurrent || requestId !== dateRangeRequestId.current) return;
+				const rangedSnapshots = loadedSnapshots
+					.filter((snapshot) => dateRangeArchives.some((archive) => archive.id === snapshot.id))
+					.sort(compareByBalanceDate);
+				const latest = rangedSnapshots[0];
+				const previous = loadedSnapshots.find((snapshot) => snapshot.id === previousArchive?.id) ?? null;
+				if (!latest) throw new Error("لم يتم العثور على بيانات ضمن النطاق الزمني المختار.");
+				setResult(latest);
+				setCurrentArchiveId(latest.id);
+				setLastUpdatedAt(latest.createdAt);
+				setPreviousSnapshot(previous?.rows ?? null);
+				setHistorySnapshots(rangedSnapshots.map(({ id, createdAt, reportDate, rows }) => ({
+					id,
+					createdAt,
+					reportDate,
+					rows,
+				})));
+				setSelectedArchiveIds([rangedSnapshots[1]?.id ?? "", latest.id]);
+				setError("");
+			} catch (rangeError) {
+				if (isCurrent && requestId === dateRangeRequestId.current) {
+					setError(`تعذر تحميل بيانات النطاق الزمني: ${rangeError instanceof Error ? rangeError.message : "خطأ غير معروف."}`);
+				}
+			} finally {
+				if (isCurrent && requestId === dateRangeRequestId.current) setIsDateRangeLoading(false);
+			}
+		})();
+		return () => {
+			isCurrent = false;
+		};
+	}, [archives, appliedDateRange, dateRangeArchives]);
+
+	useEffect(() => {
+		if (archives.length > 0 || archiveStatus !== "local") return;
+		let isCurrent = true;
+		setIsDateRangeLoading(true);
+		setComparison(null);
+		void loadSavedDashboard()
+			.then((saved) => {
+				if (!isCurrent) return;
+				if (saved?.result.reportDate &&
+					saved.result.reportDate >= appliedDateRange.start &&
+					saved.result.reportDate <= appliedDateRange.end) {
+					setResult(saved.result);
+					setLastUpdatedAt(saved.updatedAt);
+					setHistorySnapshots([{
+						id: currentArchiveId ?? "local",
+						createdAt: saved.updatedAt,
+						reportDate: saved.result.reportDate,
+						rows: saved.result.rows,
+					}]);
+				} else {
+					setResult(null);
+					setLastUpdatedAt(null);
+					setHistorySnapshots([]);
+				}
+				setError("");
+			})
+			.catch((storageError: unknown) => {
+				if (isCurrent) {
+					setResult(null);
+					setError(`تعذر تحميل النسخة المحلية للنطاق الزمني: ${storageError instanceof Error ? storageError.message : "خطأ غير معروف."}`);
+				}
+			})
+			.finally(() => {
+				if (isCurrent) setIsDateRangeLoading(false);
+			});
+		return () => {
+			isCurrent = false;
+		};
+	}, [archives.length, archiveStatus, appliedDateRange, currentArchiveId]);
+
 	const selectedRows = useMemo(() => {
 		if (!result) return [];
 		return result.rows.filter((customer) => {
@@ -300,7 +687,7 @@ function App() {
 		});
 	}, [result, selectedOwners, showOtherSegments]);
 
-	const dashboardResult = comparison?.second ?? result;
+	const dashboardResult = result;
 	const dashboardRows = useMemo(() => dashboardResult?.rows ?? [], [dashboardResult]);
 	const dashboardPreviousRows = comparison?.first.rows ?? previousSnapshot;
 
@@ -343,6 +730,10 @@ function App() {
 		(sum, customer) => sum + sumBucketsThrough(customer, 3),
 		0,
 	);
+	const activeRepresentativeUnder30 = activeRepresentativeRows.reduce(
+		(sum, customer) => sum + sumBucketsThrough(customer, 4),
+		0,
+	);
 	const activeRepresentativeOver45 = activeRepresentativeRows.reduce(
 		(sum, customer) => sum + sumBucketsFrom(customer, OVER_45_BUCKET_START),
 		0,
@@ -368,11 +759,16 @@ function App() {
 		name,
 		amount: activeRepresentativeRows.reduce((sum, customer) => sum + (customer.buckets[index] ?? 0), 0),
 	}));
+	const hasVisibleKpis = (
+		visibleWidgets["kpi-total"] ||
+		visibleWidgets["kpi-under21"] ||
+		visibleWidgets["kpi-under30"] ||
+		visibleWidgets["kpi-30-45"] ||
+		visibleWidgets["kpi-over45"] ||
+		visibleWidgets["kpi-commission"]
+	);
 	const snapshotsForTrend = comparison
-		? [
-			{ id: comparison.first.id, createdAt: comparison.first.createdAt, reportDate: comparison.first.reportDate, rows: comparison.first.rows },
-			{ id: comparison.second.id, createdAt: comparison.second.createdAt, reportDate: comparison.second.reportDate, rows: comparison.second.rows },
-		]
+		? comparison.trendSnapshots
 		: historySnapshots.length > 0
 			? historySnapshots
 			: result && lastUpdatedAt
@@ -400,14 +796,44 @@ function App() {
 		const y = 170 - ((snapshot.total - trendMinimum) / (trendMaximum - trendMinimum)) * 145;
 		return { ...snapshot, x, y };
 	});
-	const trendHeadlineBalance = comparison
-		? totalBalance(rowsForRepresentativeView(
-			comparison.second.rows,
-			activeOwnerId,
-			selectedOwners,
-			showOtherSegments,
-		))
-		: activeRepresentativeTotal;
+	const trendLabelInterval = Math.max(1, Math.ceil(trendPoints.length / 7));
+	const trendLabelPoints = trendPoints.filter((_, index) =>
+		index % trendLabelInterval === 0 || index === trendPoints.length - 1,
+	);
+	const representativeComparisonValues = comparisonOwnerIds.flatMap((ownerId) =>
+		historySnapshots.map((snapshot) =>
+			valueForRepresentativeMetric(snapshot.rows, ownerId, representativeComparisonMetric),
+		),
+	);
+	const representativeComparisonMinimum = Math.min(0, ...representativeComparisonValues);
+	const representativeComparisonMaximum = Math.max(1, ...representativeComparisonValues);
+	const representativeComparisonSeries = comparisonOwnerIds.map((ownerId, seriesIndex) => {
+		const owner = OWNER_FILTERS.find((candidate) => candidate.id === ownerId) ?? OWNER_FILTERS[seriesIndex];
+		const points = historySnapshots.map((snapshot, index) => {
+			const value = valueForRepresentativeMetric(snapshot.rows, ownerId, representativeComparisonMetric);
+			const x = historySnapshots.length <= 1 ? 440 : 100 + (index / (historySnapshots.length - 1)) * 680;
+			const y = 170 - ((value - representativeComparisonMinimum) /
+				(representativeComparisonMaximum - representativeComparisonMinimum)) * 145;
+			return { id: snapshot.id, reportDate: snapshot.reportDate, value, x, y };
+		});
+		return {
+			id: ownerId,
+			name: owner.name,
+			color: REPRESENTATIVE_COMPARISON_COLORS[seriesIndex],
+			points,
+			path: points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" "),
+		};
+	});
+	const representativeComparisonAxisLabels = [
+		representativeComparisonMaximum,
+		(representativeComparisonMinimum + representativeComparisonMaximum) / 2,
+		representativeComparisonMinimum,
+	];
+	const representativeComparisonLabelInterval = Math.max(1, Math.ceil(historySnapshots.length / 7));
+	const representativeComparisonDateLabels = historySnapshots.filter((_, index) =>
+		index % representativeComparisonLabelInterval === 0 || index === historySnapshots.length - 1,
+	);
+	const trendHeadlineBalance = activeRepresentativeTotal;
 	const trendPath = trendPoints.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
 	const topFiveForActive = activeRepresentativeRows
 		.map((customer) => ({
@@ -525,29 +951,57 @@ function App() {
 			);
 			if (currentRun === runId.current) {
 				const updatedAt = new Date().toISOString();
-				if (result) {
-					setPreviousSnapshot(result.rows);
+				const processedBalanceDate = processed.reportDate ?? updatedAt.slice(0, 10);
+				const currentBalanceDate = result?.reportDate ?? lastUpdatedAt?.slice(0, 10) ?? "";
+				if (!result || processedBalanceDate >= currentBalanceDate) {
+					setResult(processed);
+					setLastUpdatedAt(updatedAt);
 				}
-				setResult(processed);
-				setLastUpdatedAt(updatedAt);
 				setSelectedOwners(new Set(OWNER_FILTERS.map((owner) => owner.id)));
 				setShowOtherSegments(false);
 				setComparison(null);
 				try {
-					await saveDashboard({ result: processed, updatedAt });
 					const archive = await saveArchive(processed);
-					setCurrentArchiveId(archive.id);
-					setLastUpdatedAt(archive.createdAt);
-					setArchives((current) => [archive, ...current].sort(compareArchivesByBalanceDate));
+					const nextArchives = [archive, ...archives.filter((item) => item.id !== archive.id)]
+						.sort(compareByBalanceDate);
+					const latestPair = await loadLatestArchivePair(nextArchives);
+					if (!latestPair) throw new Error("تعذر تحديد أحدث نسخة بعد الحفظ.");
+					const { latest, previous } = latestPair;
+					setResult(latest);
+					setPreviousSnapshot(previous?.rows ?? null);
+					setCurrentArchiveId(latest.id);
+					setLastUpdatedAt(latest.createdAt);
+					setArchives(nextArchives);
 					setHistorySnapshots((current) => [
-						{ id: archive.id, createdAt: archive.createdAt, reportDate: archive.reportDate, rows: processed.rows },
-						...current.filter((snapshot) => snapshot.id !== archive.id),
-					].sort((first, second) => compareArchivesByBalanceDate(first, second)).slice(0, TREND_SNAPSHOT_LIMIT));
-					setSelectedArchiveIds((current) => [current[0] || current[1], archive.id]);
+						...(previous ? [{
+							id: previous.id,
+							createdAt: previous.createdAt,
+							reportDate: previous.reportDate,
+							rows: previous.rows,
+						}] : []),
+						{
+							id: latest.id,
+							createdAt: latest.createdAt,
+							reportDate: latest.reportDate,
+							rows: latest.rows,
+						},
+						...current.filter((snapshot) => snapshot.id !== latest.id && snapshot.id !== previous?.id),
+					].sort(compareByBalanceDate).slice(0, TREND_SNAPSHOT_LIMIT));
+					setSelectedArchiveIds([previous?.id ?? "", latest.id]);
+					await saveDashboard({ result: latest, updatedAt: latest.createdAt });
 					setArchiveStatus("connected");
+					setError("");
 				} catch (storageError) {
 					setArchiveStatus("local");
-					setError(`تمت المعالجة محلياً لكن تعذر حفظها في Cloudflare: ${storageError instanceof Error ? storageError.message : "خطأ غير معروف."}`);
+					let localSaveMessage = "";
+					if (!result || processedBalanceDate >= currentBalanceDate) {
+						try {
+							await saveDashboard({ result: processed, updatedAt });
+						} catch (localError) {
+							localSaveMessage = ` وتعذر أيضاً حفظ النسخة المحلية: ${localError instanceof Error ? localError.message : "خطأ غير معروف."}`;
+						}
+					}
+					setError(`تمت المعالجة محلياً لكن تعذر حفظ أحدث نسخة في Cloudflare: ${storageError instanceof Error ? storageError.message : "خطأ غير معروف."}${localSaveMessage}`);
 				}
 			}
 		} catch (processingError) {
@@ -567,9 +1021,34 @@ function App() {
 		if (!result) return;
 		try {
 			const archive = await saveArchive(result);
-			setArchives((current) => [archive, ...current].sort(compareArchivesByBalanceDate));
-			setCurrentArchiveId(archive.id);
-			setLastUpdatedAt(archive.createdAt);
+			const nextArchives = [archive, ...archives.filter((item) => item.id !== archive.id)]
+				.sort(compareByBalanceDate);
+			const latestPair = await loadLatestArchivePair(nextArchives);
+			if (!latestPair) throw new Error("تعذر تحديد أحدث نسخة بعد النشر.");
+			const { latest, previous } = latestPair;
+			setArchives(nextArchives);
+			setResult(latest);
+			setPreviousSnapshot(previous?.rows ?? null);
+			setCurrentArchiveId(latest.id);
+			setLastUpdatedAt(latest.createdAt);
+			setSelectedArchiveIds([previous?.id ?? "", latest.id]);
+			setHistorySnapshots((current) => [
+				...(previous ? [{
+					id: previous.id,
+					createdAt: previous.createdAt,
+					reportDate: previous.reportDate,
+					rows: previous.rows,
+				}] : []),
+				{
+					id: latest.id,
+					createdAt: latest.createdAt,
+					reportDate: latest.reportDate,
+					rows: latest.rows,
+				},
+				...current.filter((snapshot) => snapshot.id !== latest.id && snapshot.id !== previous?.id),
+			].sort(compareByBalanceDate).slice(0, TREND_SNAPSHOT_LIMIT));
+			setComparison(null);
+			await saveDashboard({ result: latest, updatedAt: latest.createdAt });
 			setArchiveStatus("connected");
 			setError("");
 		} catch (archiveError) {
@@ -585,23 +1064,22 @@ function App() {
 			setArchives(remaining);
 			setHistorySnapshots((current) => current.filter((snapshot) => snapshot.id !== archive.id));
 			setComparison(null);
-			if (currentArchiveId === archive.id) {
-				setCurrentArchiveId(remaining[0]?.id ?? null);
-				if (remaining[0]) {
-					const [latest, previous] = await Promise.all([
-						loadArchive(remaining[0].id),
-						remaining[1] ? loadArchive(remaining[1].id) : Promise.resolve(null),
-					]);
-					setResult(latest);
-					setLastUpdatedAt(latest.createdAt);
-					setPreviousSnapshot(previous?.rows ?? null);
-				} else {
-					setResult(null);
-					setLastUpdatedAt(null);
-					setPreviousSnapshot(null);
-				}
+			const latestPair = await loadLatestArchivePair(remaining);
+			if (latestPair) {
+				const { latest, previous } = latestPair;
+				setResult(latest);
+				setCurrentArchiveId(latest.id);
+				setLastUpdatedAt(latest.createdAt);
+				setPreviousSnapshot(previous?.rows ?? null);
+				setSelectedArchiveIds([previous?.id ?? "", latest.id]);
+				await saveDashboard({ result: latest, updatedAt: latest.createdAt });
+			} else {
+				setResult(null);
+				setCurrentArchiveId(null);
+				setLastUpdatedAt(null);
+				setPreviousSnapshot(null);
+				setSelectedArchiveIds(["", ""]);
 			}
-			setSelectedArchiveIds([remaining[1]?.id ?? "", remaining[0]?.id ?? ""]);
 			setError("");
 		} catch (archiveError) {
 			setError(`تعذر حذف النسخة: ${archiveError instanceof Error ? archiveError.message : "خطأ غير معروف."}`);
@@ -609,14 +1087,27 @@ function App() {
 	}
 
 	async function compareArchives(): Promise<void> {
-		const [firstId, secondId] = selectedArchiveIds;
-		if (!firstId || !secondId || firstId === secondId) {
-			setError("اختر نسختين مختلفتين لمقارنة أداء المندوبين.");
+		const firstId = selectedArchiveIds[0];
+		const latestId = dateRangeArchives[0]?.id;
+		const baselineIndex = dateRangeArchives.findIndex((archive) => archive.id === firstId);
+		if (!firstId || !latestId || baselineIndex < 1) {
+			setError("اختر فترة أساس ضمن النطاق وغير الأحدث للمقارنة.");
 			return;
 		}
 		setIsComparing(true);
 		try {
-			const [first, second] = await Promise.all([loadArchive(firstId), loadArchive(secondId)]);
+			const datasets = await Promise.all(
+				dateRangeArchives.slice(0, baselineIndex + 1).map((archive) => loadArchive(archive.id)),
+			);
+			const first = datasets.find((dataset) => dataset.id === firstId);
+			const second = datasets.find((dataset) => dataset.id === latestId);
+			if (!first || !second) throw new Error("تعذر تحميل فترة الأساس أو أحدث فترة من الأرشيف.");
+			const trendSnapshots = datasets.map(({ id, createdAt, reportDate, rows }) => ({
+				id,
+				createdAt,
+				reportDate,
+				rows,
+			}));
 			const aggregate = (dataset: ArchivedDataset) => {
 				const totals = new Map<string, Omit<SegmentComparison, "segment">>();
 				for (const customer of dataset.rows) {
@@ -651,7 +1142,7 @@ function App() {
 					};
 				})
 				.sort((left, right) => (right.secondOver45 - right.firstOver45) - (left.secondOver45 - left.firstOver45));
-			setComparison({ first, second, rows });
+			setComparison({ first, second, trendSnapshots, rows });
 			setError("");
 		} catch (archiveError) {
 			setError(`تعذرت مقارنة النسختين: ${archiveError instanceof Error ? archiveError.message : "خطأ غير معروف."}`);
@@ -742,57 +1233,161 @@ function App() {
 							<small>حساب</small>
 						</div>
 					</div>
-					{archives.length > 0 && (
-						<div className="comparison-controls dashboard-comparison-controls">
-							<span className="comparison-strip-label">مقارنة:</span>
+					<div className="dashboard-toolbar">
+						<div className="date-range-controls">
 							<label>
-								<span>من</span>
+								<span>نطاق التاريخ</span>
 								<select
-									aria-label="فترة الأساس للمقارنة"
-									value={selectedArchiveIds[0]}
+									aria-label="النطاق الزمني للوحة"
+									value={dateRangePreset}
 									onChange={(event) => {
-										setSelectedArchiveIds((current) => [event.target.value, current[1]]);
-										setComparison(null);
+										const preset = event.currentTarget.value;
+										if (!isDateRangePreset(preset)) return;
+										setDateRangePreset(preset);
+										if (preset !== "custom") {
+											const range = getDateRange(preset);
+											setCustomDateRange(range);
+											setAppliedDateRange(range);
+										}
 									}}
 								>
-									<option value="">اختر فترة</option>
-									{archives.map((archive) => (
-										<option key={archive.id} value={archive.id}>
-											{archiveOptionLabel(archive)} · {formatAmount(archive.total)}
-										</option>
-									))}
+									<option value="today">اليوم</option>
+									<option value="yesterday">الأمس</option>
+									<option value="last-7-days">آخر 7 أيام</option>
+									<option value="last-30-days">آخر 30 يوماً</option>
+									<option value="last-12-months">آخر 12 شهراً</option>
+									<option value="custom">نطاق مخصص</option>
 								</select>
 							</label>
-							<label>
-								<span>إلى</span>
-								<select
-									aria-label="فترة العرض للمقارنة"
-									value={selectedArchiveIds[1]}
-									onChange={(event) => {
-										setSelectedArchiveIds(([first]) => [first, event.target.value]);
-										setComparison(null);
-									}}
-								>
-									<option value="">اختر فترة</option>
-									{archives.map((archive) => (
-										<option key={archive.id} value={archive.id}>
-											{archiveOptionLabel(archive)} · {formatAmount(archive.total)}
-										</option>
-									))}
-								</select>
-							</label>
-							<button
-								className="button button-dark"
-								type="button"
-								disabled={isComparing || archives.length < 2 || !selectedArchiveIds[0] || !selectedArchiveIds[1] || selectedArchiveIds[0] === selectedArchiveIds[1]}
-								onClick={() => void compareArchives()}
-							>
-								{isComparing ? "جارٍ…" : "تطبيق"}
-							</button>
+							{dateRangePreset === "custom" && (
+								<>
+									<label>
+										<span>من</span>
+										<input
+											aria-label="بداية النطاق المخصص"
+											type="date"
+											value={customDateRange.start}
+											max={customDateRange.end}
+											onChange={(event) => {
+												const start = event.currentTarget.value;
+												setCustomDateRange((current) => ({ ...current, start }));
+											}}
+										/>
+									</label>
+									<label>
+										<span>إلى</span>
+										<input
+											aria-label="نهاية النطاق المخصص"
+											type="date"
+											value={customDateRange.end}
+											min={customDateRange.start}
+											onChange={(event) => {
+												const end = event.currentTarget.value;
+												setCustomDateRange((current) => ({ ...current, end }));
+											}}
+										/>
+									</label>
+									<button
+										className="button button-dark"
+										type="button"
+										disabled={!customDateRange.start || !customDateRange.end || customDateRange.start > customDateRange.end}
+										onClick={() => {
+											setAppliedDateRange(customDateRange);
+											setError("");
+										}}
+									>
+										تطبيق النطاق
+									</button>
+								</>
+							)}
 						</div>
-					)}
+						{dateRangeArchives.length > 1 && (
+							<div className="comparison-controls dashboard-comparison-controls">
+								<span className="comparison-strip-label">مقارنة أحدث تاريخ مع:</span>
+								<label>
+									<span>فترة الأساس</span>
+									<select
+										aria-label="فترة الأساس للمقارنة"
+										value={selectedArchiveIds[0]}
+										onChange={(event) => {
+											setSelectedArchiveIds([event.currentTarget.value, dateRangeArchives[0].id]);
+											setComparison(null);
+										}}
+									>
+										<option value="">اختر فترة</option>
+										{dateRangeArchives.slice(1).map((archive) => (
+											<option key={archive.id} value={archive.id}>
+												{archiveOptionLabel(archive)} · {formatAmount(archive.total)}
+											</option>
+										))}
+									</select>
+								</label>
+								<span className="comparison-strip-label comparison-latest-label">
+									الأحدث: {archiveOptionLabel(dateRangeArchives[0])}
+								</span>
+								<button
+									className="button button-dark"
+									type="button"
+									disabled={isComparing || !selectedArchiveIds[0] || selectedArchiveIds[0] === dateRangeArchives[0].id}
+									onClick={() => void compareArchives()}
+								>
+									{isComparing ? "جارٍ…" : "تطبيق المقارنة"}
+								</button>
+							</div>
+						)}
+						<div className="dashboard-widget-customizer">
+							<button
+								className="button button-quiet dashboard-widget-toggle"
+								type="button"
+								aria-expanded={isWidgetSettingsOpen}
+								aria-controls="dashboard-widget-settings"
+								onClick={() => setIsWidgetSettingsOpen((open) => !open)}
+							>
+								{isWidgetSettingsOpen ? "إغلاق تخصيص اللوحة" : "＋ تخصيص اللوحة"}
+							</button>
+							{isWidgetSettingsOpen && (
+								<div className="dashboard-widget-settings" id="dashboard-widget-settings">
+									<div className="dashboard-widget-settings-heading">
+										<div>
+											<strong>عناصر اللوحة</strong>
+											<p>أظهر أو أخفِ العناصر، واسحب أي بطاقة أو رسم إلى موضعه الجديد. تُحفظ التغييرات على هذا الجهاز.</p>
+										</div>
+											<div className="dashboard-widget-reset-actions">
+												<button className="button button-quiet" type="button" onClick={resetWidgetVisibility}>
+													إظهار الكل
+												</button>
+												<button className="button button-quiet" type="button" onClick={resetWidgetOrder}>
+													استعادة الترتيب
+												</button>
+											</div>
+									</div>
+									<div className="dashboard-widget-groups">
+										{DASHBOARD_WIDGET_GROUPS.map((group) => (
+											<fieldset key={group.title}>
+												<legend>{group.title}</legend>
+												{group.items.map(({ id, label }) => (
+													<label key={id}>
+														<input
+															type="checkbox"
+															checked={visibleWidgets[id]}
+															onChange={(event) => updateWidgetVisibility(id, event.currentTarget.checked)}
+														/>
+														<span>{label}</span>
+													</label>
+												))}
+											</fieldset>
+										))}
+									</div>
+								</div>
+							)}
+						</div>
+					</div>
 				</div>
-				<div className="representative-selector" role="group" aria-label="اختيار مندوب المبيعات">
+				{isDateRangeLoading && <p className="date-range-status" role="status">جارٍ تحميل بيانات النطاق المحدد…</p>}
+				{!isDateRangeLoading && (archives.length > 0 || archiveStatus === "local") && dateRangeArchives.length === 0 && !result && (
+					<p className="date-range-status" role="status">لا توجد نسخة بتاريخ رصيد ضمن النطاق المحدد.</p>
+				)}
+				{result && <div className="representative-selector" role="group" aria-label="اختيار مندوب المبيعات">
 					<button
 						type="button"
 						className={`representative-card representative-all-card${activeOwnerId === "all" && !showOtherSegments && selectedOwners.size === OWNER_FILTERS.length ? " active" : ""}`}
@@ -834,14 +1429,14 @@ function App() {
 						<strong>{formatAmount(totalBalance(dashboardRows.filter((customer) => ownerForSegment(customer.segment) === null)))}</strong>
 						<small>{dashboardRows.filter((customer) => ownerForSegment(customer.segment) === null).length} حساب</small>
 					</button>
-				</div>
+				</div>}
 				{result ? (
 					<div
 						key={`${activeOwnerId}-${showOtherSegments}-${[...selectedOwners].sort().join(",")}`}
 						className="representative-view-transition"
 					>
-						<div className="rep-kpi-grid">
-							<article className="rep-kpi-card">
+						<div className={`rep-kpi-grid${hasVisibleKpis ? "" : " dashboard-widget-hidden"}`}>
+							<article {...widgetDragProps("kpi-total")} className={`rep-kpi-card dashboard-widget-draggable${visibleWidgets["kpi-total"] ? "" : " dashboard-widget-hidden"}`}>
 								<span>إجمالي الرصيد</span>
 								<strong title={comparison ? `رصيد فترة العرض ${formatReportDate(comparison.second.reportDate)}` : "الرصيد الحالي"}>
 									{formatAmount(trendHeadlineBalance)}
@@ -853,12 +1448,17 @@ function App() {
 								</small>
 								<small className="rep-kpi-footnote">تغير الرصيد لا يثبت التحصيل وحده</small>
 							</article>
-							<article className="rep-kpi-card rep-kpi-under21">
+							<article {...widgetDragProps("kpi-under21")} className={`rep-kpi-card rep-kpi-under21 dashboard-widget-draggable${visibleWidgets["kpi-under21"] ? "" : " dashboard-widget-hidden"}`}>
 								<span>الرصيد حتى 21 يوماً</span>
 								<strong>{formatAmount(activeRepresentativeUnder21)}</strong>
 								<small>{formatPercent(activeRepresentativeUnder21, activeRepresentativeTotal)} من المحفظة · Current وحتى فترة أقل من 21</small>
 							</article>
-							<article className="rep-kpi-card rep-kpi-warning">
+							<article {...widgetDragProps("kpi-under30")} className={`rep-kpi-card rep-kpi-under45 dashboard-widget-draggable${visibleWidgets["kpi-under30"] ? "" : " dashboard-widget-hidden"}`}>
+								<span>الرصيد حتى 30 يوماً</span>
+								<strong>{formatAmount(activeRepresentativeUnder30)}</strong>
+								<small>{formatPercent(activeRepresentativeUnder30, activeRepresentativeTotal)} من المحفظة · مجموع الفترات حتى 30 يوماً</small>
+							</article>
+							<article {...widgetDragProps("kpi-30-45")} className={`rep-kpi-card rep-kpi-warning dashboard-widget-draggable${visibleWidgets["kpi-30-45"] ? "" : " dashboard-widget-hidden"}`}>
 								<span>الرصيد بين 30–45 يوماً</span>
 								<strong>{formatAmount(activeRepresentative30To45)}</strong>
 								<small>{formatPercent(activeRepresentative30To45, activeRepresentativeTotal)} من المحفظة · فترتا 30–37 و37–45 فقط</small>
@@ -866,23 +1466,23 @@ function App() {
 									العمولة المعرّضة للفقد (1٪): <strong>{formatAmount(activeRepresentative30To45 * COMMISSION_RATE)}</strong>
 								</small>
 							</article>
-							<article className="rep-kpi-card rep-kpi-risk">
+							<article {...widgetDragProps("kpi-over45")} className={`rep-kpi-card rep-kpi-risk dashboard-widget-draggable${visibleWidgets["kpi-over45"] ? "" : " dashboard-widget-hidden"}`}>
 								<span>الرصيد فوق 45 يوماً</span>
 								<strong>{formatAmount(activeRepresentativeOver45)}</strong>
 								<small>{formatPercent(activeRepresentativeOver45, activeRepresentativeTotal)} من المحفظة · {activeRepresentativeRows.filter((customer) => sumBucketsFrom(customer, OVER_45_BUCKET_START) > 0).length} حساب</small>
 							</article>
-							<article className="rep-kpi-card rep-kpi-risk">
+							<article {...widgetDragProps("kpi-commission")} className={`rep-kpi-card rep-kpi-risk dashboard-widget-draggable${visibleWidgets["kpi-commission"] ? "" : " dashboard-widget-hidden"}`}>
 								<span>العمولة المفقودة التقديرية · +45 · 1٪</span>
 								<strong>{formatAmount(activeRepresentativeOver45 * COMMISSION_RATE)}</strong>
 								<small>تقدير العمولة المرتبطة بالرصيد فوق 45 يوماً</small>
 							</article>
 						</div>
-						<div className="rep-chart-grid">
-							<article className="rep-chart-card">
+						<div className={`rep-chart-grid${visibleWidgets.trend || visibleWidgets["aging-pie"] ? "" : " dashboard-widget-hidden"}`}>
+							<article {...widgetDragProps("trend")} className={`rep-chart-card dashboard-widget-draggable${visibleWidgets.trend ? "" : " dashboard-widget-hidden"}`}>
 								<div className="rep-chart-heading">
 									<div>
 										<h3>اتجاه إجمالي الرصيد</h3>
-										<p>{comparison ? "الفترة المحددة مقارنة بفترة الأساس" : `حسب آخر ${activeTrend.length} لقطات محفوظة`} · لا يمثل التحصيل وحده</p>
+										<p>{comparison ? `من ${formatReportDate(comparison.first.reportDate)} حتى أحدث فترة، مع عرض كل الفترات بينهما` : `حسب آخر ${activeTrend.length} لقطات محفوظة`} · لا يمثل التحصيل وحده</p>
 									</div>
 									<strong title={comparison ? `رصيد فترة العرض ${formatReportDate(comparison.second.reportDate)}` : "الرصيد الحالي"}>
 										{formatAmount(trendHeadlineBalance)}
@@ -911,11 +1511,11 @@ function App() {
 											))}
 										</svg>
 										<div className="rep-chart-labels">
-											{trendPoints.map((point, index) => (
+											{trendLabelPoints.map((point, index) => (
 												<span
 													key={point.id}
 													style={{ left: `${(point.x / 780) * 100}%` }}
-													className={index === 0 ? "first" : index === trendPoints.length - 1 ? "last" : ""}
+													className={index === 0 ? "first" : index === trendLabelPoints.length - 1 ? "last" : ""}
 													title={formatReportDate(point.reportDate)}
 												>
 													{formatTrendDate(point.reportDate)}
@@ -925,7 +1525,7 @@ function App() {
 									</>
 								) : <p className="rep-chart-empty">لا توجد بيانات تاريخية لهذا المندوب.</p>}
 							</article>
-							<article className="rep-chart-card">
+							<article {...widgetDragProps("aging-pie")} className={`rep-chart-card dashboard-widget-draggable${visibleWidgets["aging-pie"] ? "" : " dashboard-widget-hidden"}`}>
 								<div className="rep-chart-heading">
 									<div>
 										<h3>حصة الفترات من رصيد المندوب</h3>
@@ -957,8 +1557,127 @@ function App() {
 								</div>
 							</article>
 						</div>
-						<div className="rep-bottom-grid">
-							<article className="rep-chart-card panel age-panel">
+						<article {...widgetDragProps("owner-comparison")} className={`rep-chart-card rep-owner-comparison-card dashboard-widget-draggable${visibleWidgets["owner-comparison"] ? "" : " dashboard-widget-hidden"}`}>
+							<div className="rep-chart-heading rep-owner-comparison-heading">
+								<div>
+									<h3>مقارنة أداء مندوبين</h3>
+									<p>مقارنة الاتجاه عبر تواريخ الرصيد ضمن النطاق المختار</p>
+								</div>
+								<div className="rep-owner-comparison-controls">
+									<label>
+										<span>المؤشر</span>
+										<select
+											aria-label="مؤشر مقارنة المندوبين"
+											value={representativeComparisonMetric}
+											onChange={(event) => {
+												const metric = event.currentTarget.value;
+												if (isRepresentativeComparisonMetric(metric)) {
+													setRepresentativeComparisonMetric(metric);
+												}
+											}}
+										>
+											<option value="balance">إجمالي الرصيد</option>
+											<option value="over30">الرصيد +30</option>
+											<option value="over45">الرصيد +45</option>
+											<option value="commission">عمولة +45 التقديرية</option>
+										</select>
+									</label>
+									<label>
+										<span>المندوب الأول</span>
+										<select
+											aria-label="المندوب الأول للمقارنة"
+											value={comparisonOwnerIds[0]}
+											onChange={(event) => {
+												const ownerId = event.currentTarget.value;
+												setComparisonOwnerIds((current) => ownerId === current[1]
+													? [current[1], current[0]]
+													: [ownerId, current[1]]);
+											}}
+										>
+											{OWNER_FILTERS.map((owner) => (
+												<option key={owner.id} value={owner.id}>{owner.name}</option>
+											))}
+										</select>
+									</label>
+									<label>
+										<span>المندوب الثاني</span>
+										<select
+											aria-label="المندوب الثاني للمقارنة"
+											value={comparisonOwnerIds[1]}
+											onChange={(event) => {
+												const ownerId = event.currentTarget.value;
+												setComparisonOwnerIds((current) => ownerId === current[0]
+													? [current[1], current[0]]
+													: [current[0], ownerId]);
+											}}
+										>
+											{OWNER_FILTERS.map((owner) => (
+												<option key={owner.id} value={owner.id}>{owner.name}</option>
+											))}
+										</select>
+									</label>
+								</div>
+							</div>
+							<div className="rep-owner-comparison-legend">
+								{representativeComparisonSeries.map((series) => (
+									<span key={series.id}>
+										<i style={{ backgroundColor: series.color }} />
+										{series.name}
+											<strong>{formatAmount(series.points[series.points.length - 1]?.value ?? 0)}</strong>
+									</span>
+								))}
+							</div>
+							{historySnapshots.length > 0 ? (
+								<>
+									<svg className="rep-line-chart" viewBox="0 0 780 190" role="img" aria-label="مقارنة أداء المندوبين عبر الزمن">
+										{representativeComparisonAxisLabels.map((amount, index) => {
+											const y = [25, 96, 170][index];
+											return (
+												<g key={index}>
+													<text className="rep-trend-axis-label" x="0" y={y + 4}>
+														<title>{formatAmount(amount)}</title>
+														{trendAxisAmountFormat.format(amount)}
+													</text>
+													<line x1="88" y1={y} x2="780" y2={y} />
+												</g>
+											);
+										})}
+										{representativeComparisonSeries.map((series) => (
+											<g key={series.id}>
+												{series.points.length > 1 && (
+													<path className="rep-trend-path" style={{ stroke: series.color }} d={series.path} />
+												)}
+												{series.points.map((point) => (
+													<circle key={point.id} cx={point.x} cy={point.y} r="4" style={{ fill: series.color, stroke: series.color }}>
+														<title>{series.name} · {formatReportDate(point.reportDate)}: {formatAmount(point.value)}</title>
+													</circle>
+												))}
+											</g>
+										))}
+									</svg>
+									<div className="rep-chart-labels">
+										{representativeComparisonDateLabels.map((snapshot, index) => {
+											const pointIndex = historySnapshots.findIndex((item) => item.id === snapshot.id);
+											const x = historySnapshots.length <= 1
+												? 440
+												: 100 + (pointIndex / (historySnapshots.length - 1)) * 680;
+											return (
+												<span
+													key={snapshot.id}
+													style={{ left: `${(x / 780) * 100}%` }}
+													className={index === 0 ? "first" : index === representativeComparisonDateLabels.length - 1 ? "last" : ""}
+													title={formatReportDate(snapshot.reportDate)}
+												>
+													{formatTrendDate(snapshot.reportDate)}
+												</span>
+											);
+										})}
+									</div>
+								</>
+							) : <p className="rep-chart-empty">لا توجد لقطات ضمن النطاق الزمني لعرض المقارنة.</p>}
+						</article>
+						<div className={`rep-bottom-grid${visibleWidgets["balance-distribution"] || visibleWidgets["over45-concentration"] || visibleWidgets["owner-balances"] ? "" : " dashboard-widget-hidden"}`}>
+							<article {...widgetDragProps("balance-distribution")} className={`rep-chart-card panel age-panel dashboard-widget-draggable${visibleWidgets["balance-distribution"] ? "" : " dashboard-widget-hidden"}`}>
 								<div className="panel-heading">
 									<div>
 										<p className="panel-kicker">مجموع الأرصدة حسب الفترات</p>
@@ -987,8 +1706,8 @@ function App() {
 									<strong>{formatAmount(activeRepresentativeTotal)}</strong>
 								</div>
 							</article>
-							<div className="rep-side-stack">
-								<article className="rep-chart-card concentration-card">
+							<div className={`rep-side-stack${visibleWidgets["over45-concentration"] || visibleWidgets["owner-balances"] ? "" : " dashboard-widget-hidden"}`}>
+								<article {...widgetDragProps("over45-concentration")} className={`rep-chart-card concentration-card dashboard-widget-draggable${visibleWidgets["over45-concentration"] ? "" : " dashboard-widget-hidden"}`}>
 								<div className="rep-chart-heading">
 									<div>
 										<h3>تركيز متأخرات +45</h3>
@@ -1010,7 +1729,7 @@ function App() {
 								)) : <p className="rep-chart-empty">لا توجد متأخرات +45 لدى هذا المندوب.</p>}
 								<p className="rep-chart-footnote">أعلى 5 حسابات تشكل {formatPercent(topFiveOver45, activeOver45Total)} من إجمالي +45.</p>
 								</article>
-								<article className="rep-chart-card panel segment-panel">
+								<article {...widgetDragProps("owner-balances")} className={`rep-chart-card panel segment-panel dashboard-widget-draggable${visibleWidgets["owner-balances"] ? "" : " dashboard-widget-hidden"}`}>
 								<div className="panel-heading">
 									<div>
 										<p className="panel-kicker">حسب المندوب</p>
@@ -1057,7 +1776,7 @@ function App() {
 								</article>
 							</div>
 						</div>
-						<article className="rep-chart-card rep-heatmap-card">
+						<article {...widgetDragProps("heatmap")} className={`rep-chart-card rep-heatmap-card dashboard-widget-draggable${visibleWidgets.heatmap ? "" : " dashboard-widget-hidden"}`}>
 							<div className="rep-chart-heading">
 								<div>
 									<h3>خريطة أعمار العملاء · {activeRepresentativeName}</h3>
