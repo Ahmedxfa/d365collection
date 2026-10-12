@@ -22,6 +22,126 @@
 	backdrop-filter: blur(12px);
 }
 
+.app-tabs {
+	display: flex;
+	gap: 8px;
+	padding: 13px 0 0;
+	border-bottom: 1px solid #e4ebe5;
+}
+
+.app-tab,
+.daily-sales-sheet-tab {
+	min-height: 40px;
+	padding: 0 16px;
+	border: 0;
+	border-bottom: 2px solid transparent;
+	background: transparent;
+	color: #63756b;
+	font: inherit;
+	font-size: 13px;
+	font-weight: 700;
+	cursor: pointer;
+}
+
+.app-tab:hover,
+.daily-sales-sheet-tab:hover {
+	color: #176f5e;
+}
+
+.app-tab.active,
+.daily-sales-sheet-tab.active {
+	border-bottom-color: #176f5e;
+	color: #176f5e;
+}
+
+.daily-sales-panel {
+	margin-top: 20px;
+	padding: 22px;
+	border: 1px solid #e3ebe4;
+	border-radius: 16px;
+	background: #fff;
+}
+
+.daily-sales-panel[hidden],
+#dashboard-tab-panel[hidden] {
+	display: none !important;
+}
+
+.daily-sales-heading,
+.daily-sales-toolbar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 14px;
+}
+
+.daily-sales-heading h1 {
+	margin: 2px 0 0;
+	color: #18333a;
+	font-size: clamp(20px, 2.1vw, 26px);
+}
+
+.daily-sales-refresh {
+	white-space: nowrap;
+}
+
+.daily-sales-refresh span {
+	margin-inline-end: 5px;
+	font-size: 17px;
+}
+
+.daily-sales-toolbar {
+	margin: 18px 0 12px;
+	padding-bottom: 8px;
+	border-bottom: 1px solid #e8eee9;
+}
+
+.daily-sales-sheet-tabs {
+	display: flex;
+	gap: 4px;
+}
+
+.daily-sales-sheet-tab {
+	min-height: 36px;
+	padding: 0 12px;
+	font-size: 12px;
+}
+
+.daily-sales-toolbar > a {
+	color: #176f5e;
+	font-size: 11px;
+	font-weight: 700;
+	text-decoration: none;
+}
+
+.daily-sales-toolbar > a:hover {
+	text-decoration: underline;
+}
+
+.daily-sales-workbook {
+	width: 100%;
+	height: min(76vh, 900px);
+	min-height: 480px;
+	overflow: hidden;
+	border: 1px solid #e2e9e3;
+	border-radius: 10px;
+	background: #f8faf8;
+}
+
+.daily-sales-workbook iframe {
+	display: block;
+	width: 100%;
+	height: 100%;
+	border: 0;
+	background: #fff;
+}
+
+.daily-sales-note {
+	margin: 10px 2px 0;
+	color: #7b8980;
+	font-size: 11px;
+}
+
 .brand {
 	display: inline-flex;
 	align-items: center;
@@ -2563,6 +2683,50 @@ td:first-child {
 }
 
 @media (max-width: 620px) {
+	.app-tabs {
+		gap: 0;
+	}
+
+	.app-tab {
+		flex: 1 1 0;
+		padding: 0 8px;
+		font-size: 11px;
+	}
+
+	.daily-sales-panel {
+		padding: 13px 11px;
+	}
+
+	.daily-sales-heading {
+		align-items: flex-start;
+		flex-wrap: wrap;
+	}
+
+	.daily-sales-heading h1 {
+		font-size: 19px;
+	}
+
+	.daily-sales-toolbar {
+		align-items: flex-start;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.daily-sales-sheet-tabs {
+		width: 100%;
+	}
+
+	.daily-sales-sheet-tab {
+		flex: 1 1 0;
+		padding: 0 5px;
+		font-size: 10px;
+	}
+
+	.daily-sales-workbook {
+		height: 68vh;
+		min-height: 420px;
+	}
+
 	.page-shell {
 		width: calc(100% - 28px);
 	}

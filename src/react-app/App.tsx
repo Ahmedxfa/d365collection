@@ -152,6 +152,19 @@ const DASHBOARD_WIDGET_GROUPS: {
 	},
 ];
 const DASHBOARD_WIDGET_IDS = DASHBOARD_WIDGET_GROUPS.flatMap((group) => group.items.map(({ id }) => id));
+const DAILY_SALES_WORKBOOK_URL = "https://onedrive.live.com/:x:/g/personal/f09e9d11c43860ca/IQCXVsvY6FTdT7aJTJrTK_5sAU5EcNhqhSl1dcfuzI3XBiI?rtime=enSWX2cn30g&redeem=aHR0cHM6Ly8xZHJ2Lm1zL3gvYy9mMDllOWQxMWM0Mzg2MGNhL0lRQ1hWc3ZZNkZUZFQ3YUpUSnJUS181c0FVNUVjTmhxaFNsMWRjZnV6STNYQmlJP2U9QmN4dElD";
+type AppTab = "dashboard" | "daily-sales";
+type DailySalesSheet = "المبيعات اليومية" | "متابعة الهدف";
+
+function dailySalesEmbedUrl(sheet: DailySalesSheet, refresh: number): string {
+	const url = new URL(DAILY_SALES_WORKBOOK_URL);
+	url.searchParams.set("action", "embedview");
+	url.searchParams.set("wdSheet", sheet);
+	url.searchParams.set("wdAllowInteractivity", "True");
+	url.searchParams.set("wdHideGridlines", "True");
+	url.searchParams.set("refresh", String(refresh));
+	return url.toString();
+}
 
 function isDateRangePreset(value: string): value is DateRangePreset {
 	return value === "today" || value === "yesterday" || value === "last-7-days" ||
@@ -378,6 +391,9 @@ function HeaderUpload({
 }
 
 function App() {
+	const [activeTab, setActiveTab] = useState<AppTab>("dashboard");
+	const [dailySalesSheet, setDailySalesSheet] = useState<DailySalesSheet>("المبيعات اليومية");
+	const [dailySalesRefresh, setDailySalesRefresh] = useState(0);
 	const [uploads, setUploads] = useState<Uploads>(EMPTY_UPLOADS);
 	const [result, setResult] = useState<ProcessingResult | null>(null);
 	const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
@@ -1208,6 +1224,30 @@ function App() {
 					<strong>{isRestoring ? "جاري الاستعادة…" : formattedBalanceDate}</strong>
 				</div>
 			</header>
+			<nav className="app-tabs" role="tablist" aria-label="أقسام التطبيق">
+				<button
+					id="dashboard-tab"
+					className={`app-tab${activeTab === "dashboard" ? " active" : ""}`}
+					type="button"
+					role="tab"
+					aria-selected={activeTab === "dashboard"}
+					aria-controls="dashboard-tab-panel"
+					onClick={() => setActiveTab("dashboard")}
+				>
+					لوحة تقييم الأداء
+				</button>
+				<button
+					id="daily-sales-tab"
+					className={`app-tab${activeTab === "daily-sales" ? " active" : ""}`}
+					type="button"
+					role="tab"
+					aria-selected={activeTab === "daily-sales"}
+					aria-controls="daily-sales-tab-panel"
+					onClick={() => setActiveTab("daily-sales")}
+				>
+					متابعة المبيعات اليومية
+				</button>
+			</nav>
 			{isProcessing && (
 				<div className="status-message processing" role="status">
 					<i className="spinner" />
@@ -1221,6 +1261,7 @@ function App() {
 				</div>
 			)}
 
+			<div id="dashboard-tab-panel" role="tabpanel" aria-labelledby="dashboard-tab" hidden={activeTab !== "dashboard"}>
 			<section className="sales-dashboard-hero" id="top" aria-labelledby="sales-dashboard-title">
 				<div className="sales-dashboard-heading">
 					<div className="sales-heading-title">
@@ -1970,9 +2011,61 @@ function App() {
 				</section>
 			)}
 
+			</div>
+			<section
+				id="daily-sales-tab-panel"
+				className="daily-sales-panel"
+				role="tabpanel"
+				aria-labelledby="daily-sales-tab"
+				hidden={activeTab !== "daily-sales"}
+			>
+				<div className="daily-sales-heading">
+					<div>
+						<p className="panel-kicker">متابعة مباشرة من ملف Excel المشترك</p>
+						<h1>متابعة المبيعات اليومية</h1>
+					</div>
+					<button
+						className="button button-dark daily-sales-refresh"
+						type="button"
+						onClick={() => setDailySalesRefresh((value) => value + 1)}
+					>
+						<span aria-hidden="true">↻</span> تحديث البيانات
+					</button>
+				</div>
+				<div className="daily-sales-toolbar">
+					<div className="daily-sales-sheet-tabs" role="tablist" aria-label="أوراق متابعة المبيعات">
+						{(["المبيعات اليومية", "متابعة الهدف"] as const).map((sheet) => (
+							<button
+								key={sheet}
+								className={`daily-sales-sheet-tab${dailySalesSheet === sheet ? " active" : ""}`}
+								type="button"
+								role="tab"
+								aria-selected={dailySalesSheet === sheet}
+								onClick={() => setDailySalesSheet(sheet)}
+							>
+								{sheet}
+							</button>
+						))}
+					</div>
+					<a href={DAILY_SALES_WORKBOOK_URL} target="_blank" rel="noreferrer">
+						فتح ملف Excel في OneDrive ↗
+					</a>
+				</div>
+				<div className="daily-sales-workbook" key={`${dailySalesSheet}-${dailySalesRefresh}`}>
+					<iframe
+						title={`ورقة ${dailySalesSheet}`}
+						src={dailySalesEmbedUrl(dailySalesSheet, dailySalesRefresh)}
+						allow="clipboard-read; clipboard-write"
+						referrerPolicy="no-referrer"
+					/>
+				</div>
+				<p className="daily-sales-note" role="note">
+					إذا لم تظهر الورقة داخل الصفحة، افتح الملف في OneDrive وتأكد من أن صلاحية الرابط تسمح بعرضه.
+				</p>
+			</section>
 			<footer className="page-footer">
 				<span>مِيزان<span className="footer-dot">.</span> تحليل الذمم ببساطة</span>
-				<span>معالجة محلية · بدون رفع بياناتك إلى خادم</span>
+				<span>{activeTab === "dashboard" ? "معالجة محلية · بدون رفع بياناتك إلى خادم" : "بيانات مباشرة من ملف OneDrive المشترك"}</span>
 			</footer>
 		</main>
 	);
